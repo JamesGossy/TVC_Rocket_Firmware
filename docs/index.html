@@ -1,0 +1,612 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TVC Flight Viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #cfe3f2; font-family: system-ui, sans-serif; }
+  .box { position: absolute; background: rgba(15, 20, 30, 0.82); color: #e8edf3; border-radius: 8px; font-size: 13px; }
+  #panel { top: 12px; left: 12px; width: 340px; padding: 12px; }
+  #panel h1 { font-size: 15px; margin: 0 0 8px; }
+  .row { display: flex; justify-content: space-between; padding: 2px 0; }
+  .row span:last-child { font-variant-numeric: tabular-nums; }
+  #state { font-weight: bold; }
+  #chart { width: 100%; height: 90px; margin-top: 8px; background: rgba(255, 255, 255, 0.05); border-radius: 4px; }
+  #result, #conditions { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 11px; margin-top: 8px; display: none; }
+  #conditions { color: #f5c26b; }
+  #controls { left: 12px; right: 12px; bottom: 12px; display: flex; gap: 10px; align-items: center; padding: 10px 12px; flex-wrap: wrap; }
+  #timeline { flex: 1; min-width: 150px; }
+  #clock { width: 60px; font-variant-numeric: tabular-nums; }
+  button, select { background: #2b3647; color: #e8edf3; border: 1px solid #44536b; border-radius: 4px; padding: 4px 10px; font-size: 13px; }
+  #drop { inset: 0; border-radius: 0; display: flex; align-items: center; justify-content: center; font-size: 20px; text-align: center; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="panel" class="box">
+  <h1>TVC Flight Viewer</h1>
+  <div class="row"><span>State</span><span id="state">-</span></div>
+  <div class="row"><span>Altitude</span><span id="alt">-</span></div>
+  <div class="row"><span>Vertical speed</span><span id="vz">-</span></div>
+  <div class="row"><span>Sideways speed</span><span id="vh">-</span></div>
+  <div class="row"><span>Tilt</span><span id="tilt">-</span></div>
+  <div class="row"><span>Thrust</span><span id="thrust">-</span></div>
+  <div class="row"><span>Gimbal y / z</span><span id="gimbal">-</span></div>
+  <div class="row"><span>Mass</span><span id="mass">-</span></div>
+  <div class="row"><span>Distance from pad</span><span id="drift">-</span></div>
+  <div class="row"><span>Wind</span><span id="wind">-</span></div>
+  <canvas id="chart"></canvas>
+  <div id="conditions"></div>
+  <div id="result"></div>
+</div>
+
+<div id="controls" class="box">
+  <button id="nominal" class="hidden">Normal flight</button>
+  <button id="random" class="hidden">Random flight</button>
+  <button id="play">Play</button>
+  <select id="speed">
+    <option value="0.25">0.25x</option>
+    <option value="0.5">0.5x</option>
+    <option value="1" selected>1x</option>
+    <option value="2">2x</option>
+  </select>
+  <input id="timeline" type="range" min="0" max="1" step="0.01" value="0">
+  <span id="clock">0.00 s</span>
+  <label>Camera
+    <select id="camera">
+      <option value="follow">Follow rocket</option>
+      <option value="pad">From the pad</option>
+      <option value="free">Free</option>
+    </select>
+  </label>
+  <label>Rocket size <input id="size" type="range" min="1" max="10" step="0.5" value="1"></label>
+  <button id="open">Open CSV</button>
+  <input id="file" type="file" accept=".csv" class="hidden">
+</div>
+
+<div id="drop" class="box">Drop a flight.csv here<br>or run: python tools/view.py</div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const DEG = Math.PI / 180;
+const STATE_COLORS = { Pad: '#9aa5b1', Boost: '#ff8a3d', Coast: '#4da3ff', LandingBurn: '#ff4d4d' };
+const $ = id => document.getElementById(id);
+
+// ---------- Scene, sky and light ----------
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.prepend(renderer.domElement);
+
+const HORIZON = new THREE.Color(0xcfe3f2);
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(HORIZON, 60, 450);
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.02, 2000);
+camera.position.set(4, 1.5, 4);
+const controls = new OrbitControls(camera, renderer.domElement);
+
+// A big ball around the camera: deep blue overhead, fading to pale at the horizon
+const sky = new THREE.Mesh(new THREE.SphereGeometry(900, 32, 16), new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false,
+  uniforms: { top: { value: new THREE.Color(0x3b78c4) }, horizon: { value: HORIZON } },
+  vertexShader: 'varying float up; void main() { up = normalize(position).y; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: 'uniform vec3 top, horizon; varying float up; void main() { gl_FragColor = vec4(mix(horizon, top, pow(max(up, 0.0), 0.5)), 1.0); }',
+}));
+scene.add(sky);
+
+scene.add(new THREE.HemisphereLight(0xe3f0ff, 0x52633a, 1.1));
+const sun = new THREE.DirectionalLight(0xfff0d8, 2.8);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.normalBias = 0.02;
+Object.assign(sun.shadow.camera, { left: -4, right: 4, top: 4, bottom: -4, near: 0.1, far: 60 });
+scene.add(sun, sun.target);
+
+// The sim's world is x east, y north, z up. Three.js has y up, so tip the whole sim world over.
+// Anything inside simWorld can use the sim's numbers directly.
+const simWorld = new THREE.Group();
+simWorld.rotation.x = -Math.PI / 2;
+scene.add(simWorld);
+
+// ---------- The field ----------
+
+const smoothstep = (a, b, x) => { const t = Math.min(Math.max((x - a) / (b - a), 0), 1); return t * t * (3 - 2 * t); };
+const grass = new THREE.MeshLambertMaterial({ color: 0x5f8a3c });
+
+// The ground near the pad, from the heights the sim wrote to terrain.csv (flat if we don't have
+// them), sunk a little under the launch pad so the pad sits on top. Further out it carries on at
+// the same slope.
+let field = null;
+function buildField(text) {
+  if (field) simWorld.remove(field);
+  let size = 12, step = 0.5, slopeX = 0, slopeY = 0, heights = null;
+  if (text) {
+    const lines = text.trim().split('\n');
+    [size, step, slopeX, slopeY] = lines[1].split(',').map(Number);
+    heights = lines.slice(2).map(line => line.split(',').map(Number));
+  }
+  const n = Math.round(2 * size / step) + 1;
+
+  const positions = [], triangles = [];
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      const x = -size + i * step, y = -size + j * step;
+      const underPad = 1 - smoothstep(0.55, 0.9, Math.hypot(x, y));
+      const z = (heights ? heights[j][i] : 0) * (1 - underPad) - 0.02 * underPad;
+      positions.push(x, y, z);
+      if (i < n - 1 && j < n - 1) {
+        const k = j * n + i;
+        triangles.push(k, k + 1, k + n, k + 1, k + n + 1, k + n);
+      }
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(triangles);
+  geometry.computeVertexNormals();
+  const near = new THREE.Mesh(geometry, grass);
+  near.receiveShadow = true;
+
+  const far = new THREE.Mesh(new THREE.PlaneGeometry(2000, 2000), grass);
+  far.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(-slopeX, -slopeY, 1).normalize());
+  far.position.z = -0.05;
+  far.receiveShadow = true;
+
+  field = new THREE.Group();
+  field.add(near, far);
+  simWorld.add(field);
+}
+
+// The launch pad: a concrete slab with a steel blast plate. Its top is where the nozzle starts.
+const pad = new THREE.Group();
+const concrete = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.1), new THREE.MeshStandardMaterial({ color: 0x9a9a96, roughness: 0.9 }));
+concrete.position.z = -0.05;
+const plate = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.01, 32).rotateX(Math.PI / 2),
+                             new THREE.MeshStandardMaterial({ color: 0x8a8f96, metalness: 0.6, roughness: 0.4 }));
+plate.position.z = 0.002;
+pad.add(concrete, plate);
+pad.traverse(part => { part.castShadow = part.receiveShadow = true; });
+simWorld.add(pad);
+buildField(null);
+
+// ---------- Rocket model ----------
+
+// Built in the rocket's body frame: x points out the nose, x = 0 is the bottom of the rocket.
+function buildRocket(dims) {
+  const L = dims.body_length, r = dims.body_diameter / 2, noseLength = 0.15;
+  const white = new THREE.MeshStandardMaterial({ color: 0xf4f4f2, roughness: 0.35 });
+  const black = new THREE.MeshStandardMaterial({ color: 0x1d1f22, roughness: 0.5 });
+  const orange = new THREE.MeshStandardMaterial({ color: 0xff6a1a, roughness: 0.45 });
+  const metal = new THREE.MeshStandardMaterial({ color: 0x8c9096, metalness: 0.8, roughness: 0.35 });
+  const alongX = geometry => geometry.rotateZ(-Math.PI / 2);  // three.js builds along y, the rocket points along x
+
+  const root = new THREE.Group();    // sits on the CG and turns with the rocket
+  const bottom = new THREE.Group();  // the bottom of the rocket, every part hangs off this
+  root.add(bottom);
+
+  const tube = new THREE.Mesh(alongX(new THREE.CylinderGeometry(r, r, L - noseLength, 32)), white);
+  tube.position.x = (L - noseLength) / 2;
+
+  // Rounded nose cone, spun from its outline
+  const outline = [];
+  for (let i = 0; i <= 16; i++) {
+    const h = noseLength * i / 16;
+    outline.push(new THREE.Vector2(r * Math.sqrt(1 - (h / noseLength) ** 2), h));
+  }
+  const nose = new THREE.Mesh(alongX(new THREE.LatheGeometry(outline, 32)), orange);
+  nose.position.x = L - noseLength;
+
+  // An avionics band near the top, and a stripe down the side that shows the roll
+  const band = new THREE.Mesh(alongX(new THREE.CylinderGeometry(r * 1.01, r * 1.01, 0.05, 32)), black);
+  band.position.x = L - noseLength - 0.08;
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(L - noseLength - 0.2, 0.012, 0.004), orange);
+  stripe.position.set((L - noseLength) / 2 - 0.05, 0, r);
+  bottom.add(tube, nose, band, stripe);
+
+  // The motor mount, nozzle and flame swing around the gimbal pivot
+  const gimbal = new THREE.Group();
+  gimbal.position.x = dims.gimbal_position;
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(r * 0.8, 0.004, 8, 32).rotateY(Math.PI / 2), metal);
+  const nozzle = new THREE.Mesh(alongX(new THREE.CylinderGeometry(0.015, 0.011, 0.03, 16)), black);
+  nozzle.position.x = -dims.gimbal_position - 0.01;
+
+  // Flame: a bright core inside a softer orange cone, both 1 m long and scaled with thrust
+  const glow = color => new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.8,
+                                                      blending: THREE.AdditiveBlending, depthWrite: false });
+  const flame = new THREE.Group();
+  flame.add(new THREE.Mesh(new THREE.ConeGeometry(0.03, 1, 16, 1, true).rotateZ(Math.PI / 2).translate(-0.5, 0, 0), glow(0xff8a2a)),
+            new THREE.Mesh(new THREE.ConeGeometry(0.013, 0.55, 12, 1, true).rotateZ(Math.PI / 2).translate(-0.275, 0, 0), glow(0xfff2b0)));
+  flame.position.x = -dims.gimbal_position - 0.025;
+  const fireLight = new THREE.PointLight(0xff9a40, 0, 8, 2);  // lights up the grass under the flame
+  fireLight.position.x = -0.15;
+  flame.add(fireLight);
+  gimbal.add(ring, nozzle, flame);
+  bottom.add(gimbal);
+
+  // Four legs with foot pads, folded against the body until the descent
+  const legs = [];
+  for (let i = 0; i < 4; i++) {
+    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 1, 8), black);
+    const foot = new THREE.Mesh(alongX(new THREE.CylinderGeometry(0.018, 0.018, 0.008, 16)), metal);
+    legs.push({ strut, foot, angle: (i + 0.5) * Math.PI / 2 });
+    bottom.add(strut, foot);
+  }
+
+  root.traverse(part => { part.castShadow = true; });
+  flame.traverse(part => { part.castShadow = false; });
+  return { root, bottom, gimbal, flame, fireLight, legs, radius: r, legSpan: dims.leg_span, legDrop: dims.leg_drop };
+}
+
+// Stretch a unit-length cylinder so it runs from point a to point b
+function placeBetween(mesh, a, b) {
+  const direction = new THREE.Vector3().subVectors(b, a);
+  mesh.position.copy(a).addScaledVector(direction, 0.5);
+  mesh.scale.set(1, direction.length(), 1);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
+}
+
+function setLegs(rocket, deployed) {
+  for (const { strut, foot, angle } of rocket.legs) {
+    const side = new THREE.Vector3(0, Math.cos(angle), Math.sin(angle));
+    const hinge = new THREE.Vector3(0.3, 0, 0).addScaledVector(side, rocket.radius);
+    const folded = new THREE.Vector3(0.02, 0, 0).addScaledVector(side, rocket.radius + 0.01);
+    const open = new THREE.Vector3(-rocket.legDrop, 0, 0).addScaledVector(side, rocket.legSpan / 2);
+    const end = folded.lerp(open, deployed);
+    placeBetween(strut, hinge, end);
+    foot.position.copy(end);
+    foot.visible = deployed > 0.5;
+  }
+}
+
+// ---------- Smoke ----------
+
+// A soft round puff, drawn once onto a little canvas
+const puffTexture = (() => {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gradient.addColorStop(0, 'rgba(255,255,255,1)');
+  gradient.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(canvas);
+})();
+
+// One puff of smoke every 0.03 s while a motor burns. Each one leaves the nozzle, drifts with the
+// wind, rises a little, grows and fades. They're worked out from the flight time, so scrubbing
+// the timeline back and forth just works.
+const PUFF_LIFE = 3;
+let puffs = [];
+function buildSmoke() {
+  for (const puff of puffs) simWorld.remove(puff.sprite);
+  puffs = [];
+  let lastPuff = -1;
+  for (const r of rows) {
+    if (r.thrust < 1 || r.time - lastPuff < 0.03) continue;
+    lastPuff = r.time;
+    const nose = new THREE.Vector3(1, 0, 0).applyQuaternion(new THREE.Quaternion(r.qx, r.qy, r.qz, r.qw).normalize());
+    const nozzle = new THREE.Vector3(r.x, r.y, r.altitude + startCg).addScaledVector(nose, -r.cg);
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: puffTexture, color: 0xd8d4cc, transparent: true, depthWrite: false }));
+    sprite.visible = false;
+    simWorld.add(sprite);
+    puffs.push({ sprite, born: r.time, nozzle, nose, wind: new THREE.Vector3(r.wind_x, r.wind_y, 0) });
+  }
+}
+
+function showSmoke(t, size) {
+  for (const puff of puffs) {
+    const age = t - puff.born;
+    puff.sprite.visible = age >= 0 && age < PUFF_LIFE;
+    if (!puff.sprite.visible) continue;
+    puff.sprite.position.copy(puff.nozzle)
+      .addScaledVector(puff.nose, -1.2 * (1 - Math.exp(-3 * age)))  // blown out of the nozzle
+      .addScaledVector(puff.wind, age)
+      .add(new THREE.Vector3(0, 0, 0.2 * age));
+    puff.sprite.position.z = Math.max(puff.sprite.position.z, 0.1);  // smoke spreads out along the grass
+    puff.sprite.scale.setScalar((0.1 + 0.5 * age) * size);
+    puff.sprite.material.opacity = 0.45 * (1 - age / PUFF_LIFE);
+  }
+}
+
+// ---------- Flight data ----------
+
+let rows = [], rocket = null, trail = null, startCg = 0, descentStart = Infinity;
+let ejectRow = null, caseLandTime = Infinity;
+let time = 0, playing = false;
+
+// The spent ascent motor once the landing motor kicks it out: a brown cardboard tube
+const spentCase = new THREE.Mesh(new THREE.CylinderGeometry(0.0145, 0.0145, 0.114, 16).rotateZ(-Math.PI / 2),
+                                 new THREE.MeshStandardMaterial({ color: 0x9c7a4f, roughness: 0.8 }));
+spentCase.castShadow = true;
+spentCase.visible = false;
+simWorld.add(spentCase);
+
+function parseCsv(text) {
+  const lines = text.trim().split(/\r?\n/);
+  const names = lines[0].split(',');
+  return lines.slice(1).map(line => {
+    const values = line.split(',');
+    const row = {};
+    names.forEach((name, i) => { row[name] = name === 'state' ? values[i] : parseFloat(values[i]); });
+    return row;
+  });
+}
+
+function loadFlight(csvText, summary, dims, conditions) {
+  rows = parseCsv(csvText);
+  if (rows.length < 2 || rows[0].qw === undefined) {
+    $('drop').textContent = 'This flight.csv is from an older tvc_sim. Rebuild it (make) and fly again.';
+    $('drop').classList.remove('hidden');
+    rows = [];
+    return;
+  }
+  dims = dims || { body_length: 0.8, body_diameter: 0.074, gimbal_position: 0.07, leg_span: 0.7, leg_drop: 0.08 };
+  startCg = rows[0].cg;
+
+  // The legs come out at the top of the flight, like in the sim
+  const top = rows.reduce((best, r) => (r.altitude > best.altitude ? r : best), rows[0]);
+  descentStart = top.time;
+  ejectRow = rows.find(r => r.case_out === 1) || null;
+  const caseDown = rows.find(r => r.case_out === 2);
+  caseLandTime = caseDown ? caseDown.time : Infinity;
+
+  if (rocket) simWorld.remove(rocket.root);
+  rocket = buildRocket(dims);
+  simWorld.add(rocket.root);
+  buildSmoke();
+
+  // Trail of where the CG went, colored by flight state
+  if (trail) simWorld.remove(trail);
+  const points = [], colors = [];
+  for (const r of rows) {
+    points.push(r.x, r.y, r.altitude + startCg);
+    const c = new THREE.Color(STATE_COLORS[r.state] || '#ffffff');
+    colors.push(c.r, c.g, c.b);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  trail = new THREE.Line(geometry, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.6 }));
+  simWorld.add(trail);
+
+  const last = rows[rows.length - 1];
+  $('result').textContent = summary ||
+    `Touchdown: ${(-last.vz).toFixed(2)} m/s down, ${Math.hypot(last.vx, last.vy).toFixed(2)} m/s sideways`;
+  $('conditions').textContent = conditions || '';
+  $('conditions').style.display = conditions ? 'block' : 'none';
+  $('timeline').max = last.time;
+  $('drop').classList.add('hidden');
+
+  time = 0;
+  playing = true;
+  setCamera($('camera').value);
+}
+
+// Flight state at any time, blended between the logged rows (they're 0.01 s apart)
+function sample(t) {
+  let lo = 0, hi = rows.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (rows[mid].time <= t) lo = mid; else hi = mid;
+  }
+  const a = rows[lo], b = rows[hi];
+  const f = Math.min(Math.max((t - a.time) / (b.time - a.time || 1), 0), 1);
+  const row = { state: a.state, index: lo };
+  for (const key in a) if (key !== 'state') row[key] = a[key] + (b[key] - a[key]) * f;
+  return row;
+}
+
+// ---------- Drawing each frame ----------
+
+function showFrame(t) {
+  const f = sample(t);
+  const size = parseFloat($('size').value);
+
+  rocket.root.position.set(f.x, f.y, f.altitude + startCg);
+  rocket.root.quaternion.set(f.qx, f.qy, f.qz, f.qw).normalize();
+  rocket.bottom.position.x = -f.cg;
+  rocket.bottom.scale.setScalar(size);
+  rocket.gimbal.rotation.set(0, f.gimbal_y_deg * DEG, f.gimbal_z_deg * DEG, 'YZX');
+  setLegs(rocket, Math.min(Math.max((t - descentStart) / 0.4, 0), 1));
+
+  // Flame length follows thrust, with a little flicker
+  const flicker = 0.9 + Math.random() * 0.2;
+  rocket.flame.visible = f.thrust > 0.5;
+  rocket.flame.scale.x = f.thrust * 0.035 * flicker;
+  rocket.fireLight.intensity = f.thrust > 0.5 ? f.thrust * 0.6 * flicker : 0;
+
+  trail.geometry.setDrawRange(0, f.index + 1);
+  showSmoke(t, size);
+  showSpentCase(t, size);
+
+  $('state').textContent = f.state;
+  $('state').style.color = STATE_COLORS[f.state];
+  $('alt').textContent = f.altitude.toFixed(1) + ' m';
+  $('vz').textContent = f.vz.toFixed(1) + ' m/s';
+  $('vh').textContent = Math.hypot(f.vx, f.vy).toFixed(1) + ' m/s';
+  $('tilt').textContent = f.tilt_deg.toFixed(1) + '°';
+  $('thrust').textContent = f.thrust.toFixed(1) + ' N';
+  $('gimbal').textContent = f.gimbal_y_deg.toFixed(1) + '° / ' + f.gimbal_z_deg.toFixed(1) + '°';
+  $('mass').textContent = (f.mass * 1000).toFixed(0) + ' g';
+  $('drift').textContent = Math.hypot(f.x, f.y).toFixed(1) + ' m';
+  $('wind').textContent = Math.hypot(f.wind_x, f.wind_y).toFixed(1) + ' m/s';
+  $('clock').textContent = t.toFixed(2) + ' s';
+  $('timeline').value = t;
+  $('result').style.display = t >= rows[rows.length - 1].time - 0.02 ? 'block' : 'none';
+
+  drawChart(t);
+}
+
+// The spent case tumbles end over end as it falls, then lies flat on the grass
+function showSpentCase(t, size) {
+  spentCase.visible = ejectRow !== null && t >= ejectRow.time;
+  if (!spentCase.visible) return;
+  const f = sample(t);
+  spentCase.position.set(f.case_x, f.case_y, f.case_z);
+  spentCase.scale.setScalar(size);
+  if (t >= caseLandTime) {
+    spentCase.quaternion.identity();  // lying along the ground
+  } else {
+    const leftRocket = new THREE.Quaternion(ejectRow.qx, ejectRow.qy, ejectRow.qz, ejectRow.qw).normalize();
+    const tumble = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 8 * (t - ejectRow.time));
+    spentCase.quaternion.copy(leftRocket).multiply(tumble);
+  }
+}
+
+// Altitude over the whole flight, with a line showing where we are now
+function drawChart(t) {
+  const canvas = $('chart');
+  const w = canvas.width = canvas.clientWidth * devicePixelRatio;
+  const h = canvas.height = canvas.clientHeight * devicePixelRatio;
+  const ctx = canvas.getContext('2d');
+  const end = rows[rows.length - 1].time;
+  const top = Math.max(...rows.map(r => r.altitude)) * 1.1 || 1;
+  const px = time => time / end * w;
+  const py = alt => h - alt / top * h;
+
+  ctx.lineWidth = 2 * devicePixelRatio;
+  for (let i = 1; i < rows.length; i++) {
+    ctx.strokeStyle = STATE_COLORS[rows[i].state];
+    ctx.beginPath();
+    ctx.moveTo(px(rows[i - 1].time), py(rows[i - 1].altitude));
+    ctx.lineTo(px(rows[i].time), py(rows[i].altitude));
+    ctx.stroke();
+  }
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = devicePixelRatio;
+  ctx.beginPath();
+  ctx.moveTo(px(t), 0);
+  ctx.lineTo(px(t), h);
+  ctx.stroke();
+}
+
+// ---------- Camera ----------
+
+const rocketPosition = new THREE.Vector3();
+const lastRocketPosition = new THREE.Vector3();
+
+function setCamera(mode) {
+  if (!rocket) return;
+  rocket.root.getWorldPosition(rocketPosition);
+  if (mode === 'follow') camera.position.copy(rocketPosition).add(new THREE.Vector3(3, 0.6, 3));
+  if (mode === 'pad') camera.position.set(12, 1.7, 12);
+  if (mode === 'free') camera.position.set(30, 20, 30);
+  controls.target.copy(mode === 'free' ? new THREE.Vector3(0, 15, 0) : rocketPosition);
+  lastRocketPosition.copy(rocketPosition);
+}
+
+function moveCamera() {
+  rocket.root.getWorldPosition(rocketPosition);
+  const mode = $('camera').value;
+  if (mode === 'follow') {
+    // Move the camera along with the rocket, you can still drag to orbit around it
+    camera.position.add(rocketPosition.clone().sub(lastRocketPosition));
+    controls.target.copy(rocketPosition);
+  }
+  if (mode === 'pad') controls.target.copy(rocketPosition);
+  lastRocketPosition.copy(rocketPosition);
+
+  // Keep the sun's shadow box centered on the rocket
+  sun.position.copy(rocketPosition).add(new THREE.Vector3(8, 14, 5));
+  sun.target.position.copy(rocketPosition);
+}
+
+// ---------- Controls ----------
+
+$('play').onclick = () => {
+  if (!rows.length) return;
+  if (time >= rows[rows.length - 1].time) time = 0;  // replay from the start
+  playing = !playing;
+};
+$('timeline').oninput = event => { time = parseFloat(event.target.value); playing = false; };
+$('camera').onchange = event => setCamera(event.target.value);
+$('open').onclick = () => $('file').click();
+$('file').onchange = async event => loadFlight(await event.target.files[0].text());
+
+window.addEventListener('keydown', event => {
+  if (event.code === 'Space') { event.preventDefault(); $('play').click(); }
+});
+window.addEventListener('dragover', event => event.preventDefault());
+window.addEventListener('drop', async event => {
+  event.preventDefault();
+  const file = event.dataTransfer.files[0];
+  if (file) loadFlight(await file.text());
+});
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---------- Main loop ----------
+
+let lastFrame = performance.now();
+function animate(now) {
+  requestAnimationFrame(animate);
+  const dt = Math.min((now - lastFrame) / 1000, 0.1);
+  lastFrame = now;
+
+  if (rows.length) {
+    const end = rows[rows.length - 1].time;
+    if (playing) time += dt * parseFloat($('speed').value);
+    if (time >= end) { time = end; playing = false; }
+    $('play').textContent = playing ? 'Pause' : 'Play';
+    showFrame(time);
+    moveCamera();
+  }
+  controls.update();
+  sky.position.copy(camera.position);
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(animate);
+
+// Flights come from flights/normal.json and flights/random-N.json. Online those are saved
+// flights, and when tools/view.py is running it flies a fresh one each time.
+const RANDOM_FLIGHTS = 20;
+async function fly(randomFlight) {
+  $('random').disabled = $('nominal').disabled = true;
+  if (randomFlight) $('random').textContent = 'Flying...';
+  const pick = 1 + Math.floor(Math.random() * RANDOM_FLIGHTS);
+  try {
+    const flight = await (await fetch(randomFlight ? `flights/random-${pick}.json` : 'flights/normal.json')).json();
+    if (flight.error) {
+      $('drop').textContent = flight.error;
+      $('drop').classList.remove('hidden');
+    } else {
+      buildField(flight.terrain);
+      loadFlight(flight.csv, flight.summary, flight.rocket, flight.conditions);
+    }
+  } finally {
+    $('random').disabled = $('nominal').disabled = false;
+    $('random').textContent = 'Random flight';
+  }
+}
+
+if (location.protocol.startsWith('http')) {
+  $('nominal').classList.remove('hidden');
+  $('random').classList.remove('hidden');
+  $('nominal').onclick = () => fly(false);
+  $('random').onclick = () => fly(true);
+  $('drop').textContent = 'Loading the flight...';
+  fly(false);
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# Build
+tvc_sim
+tvc_sim.exe
+
+# Sim output
+flight.csv
+terrain.csv
+montecarlo.csv
+validation/output/
+
+# Python
+.venv/
+__pycache__/
