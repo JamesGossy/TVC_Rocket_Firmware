@@ -63,8 +63,10 @@ static const float TVC_PITCH_SERVO[TVC_N][TVC_N] = {
 static inline float tvc_bilerp(const float t[TVC_N][TVC_N], float yaw, float pitch)
 {
     float fx = (yaw - TVC_GRID0) / TVC_GRID_STEP, fy = (pitch - TVC_GRID0) / TVC_GRID_STEP;
-    if (fx < 0) fx = 0; if (fx > TVC_N - 1.001f) fx = TVC_N - 1.001f;
-    if (fy < 0) fy = 0; if (fy > TVC_N - 1.001f) fy = TVC_N - 1.001f;
+    if (fx < 0) fx = 0;
+    if (fx > TVC_N - 1.001f) fx = TVC_N - 1.001f;
+    if (fy < 0) fy = 0;
+    if (fy > TVC_N - 1.001f) fy = TVC_N - 1.001f;
     int ix = (int)fx, iy = (int)fy; float ax = fx - ix, ay = fy - iy;
     float a = t[iy][ix] * (1 - ax) + t[iy][ix + 1] * ax;
     float b = t[iy + 1][ix] * (1 - ax) + t[iy + 1][ix + 1] * ax;
