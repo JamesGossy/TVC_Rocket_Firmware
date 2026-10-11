@@ -278,9 +278,8 @@ FlightResult runFlight(const Config& truth, const Config& nominal, const Vehicle
         if (state.velocity.z < 0 && result.apogee > 1.0) falling = true;
         if (!falling) continue;
 
+        footLoads(truth, in, state, loads);  // with the crush from before this step, the same forces the step used
         crushFeet(truth, ground, in, state, crush);
-        in.foot_crush = crush;
-        footLoads(truth, in, state, loads);
         double lowest = lowestPoint(truth, ground, in, state);
         bool was_touching = touching;
         touching = lowest <= 0;

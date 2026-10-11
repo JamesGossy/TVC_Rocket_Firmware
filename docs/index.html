@@ -7,8 +7,9 @@
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #cfe3f2; font-family: system-ui, sans-serif; }
   .box { position: absolute; background: rgba(15, 20, 30, 0.82); color: #e8edf3; border-radius: 8px; font-size: 13px; }
-  #panel { top: 12px; left: 12px; width: 340px; padding: 12px; }
+  #panel { top: 12px; left: 12px; width: 340px; padding: 12px; max-height: calc(100% - 110px); overflow-y: auto; }
   #panel h1 { font-size: 15px; margin: 0 0 8px; }
+  #panel h2 { font-size: 11px; margin: 10px 0 3px; text-transform: uppercase; letter-spacing: 0.06em; color: #8fa3bd; font-weight: 600; }
   .row { display: flex; justify-content: space-between; padding: 2px 0; }
   .row span:last-child { font-variant-numeric: tabular-nums; }
   #state { font-weight: bold; }
@@ -19,24 +20,40 @@
   #timeline { flex: 1; min-width: 150px; }
   #clock { width: 60px; font-variant-numeric: tabular-nums; }
   button, select { background: #2b3647; color: #e8edf3; border: 1px solid #44536b; border-radius: 4px; padding: 4px 10px; font-size: 13px; }
+  button.on { background: #3d6fb5; border-color: #6fa0e6; }
+  label { white-space: nowrap; }
   #drop { inset: 0; border-radius: 0; display: flex; align-items: center; justify-content: center; font-size: 20px; text-align: center; }
   .hidden { display: none !important; }
+  .ok { color: #7fdc8a; } .warn { color: #f5c26b; } .bad { color: #ff7a7a; }
 </style>
 </head>
 <body>
 
 <div id="panel" class="box">
-  <h1>TVC Flight Viewer</h1>
+  <h1>TVC Flight Viewer <span style="font-weight:normal;color:#8fa3bd">TVC_Rocket_Gimbal_v3</span></h1>
   <div class="row"><span>State</span><span id="state">-</span></div>
   <div class="row"><span>Altitude</span><span id="alt">-</span></div>
   <div class="row"><span>Vertical speed</span><span id="vz">-</span></div>
   <div class="row"><span>Sideways speed</span><span id="vh">-</span></div>
   <div class="row"><span>Tilt</span><span id="tilt">-</span></div>
-  <div class="row"><span>Thrust</span><span id="thrust">-</span></div>
-  <div class="row"><span>Gimbal y / z</span><span id="gimbal">-</span></div>
+  <div class="row"><span>Thrust (of full)</span><span id="thrust">-</span></div>
   <div class="row"><span>Mass</span><span id="mass">-</span></div>
   <div class="row"><span>Distance from pad</span><span id="drift">-</span></div>
   <div class="row"><span>Wind</span><span id="wind">-</span></div>
+  <h2>Gimbal and servos</h2>
+  <div class="row"><span>Gimbal pitch / yaw</span><span id="gimbal">-</span></div>
+  <div class="row"><span>Servo yaw / pitch (cmd → actual)</span><span id="tvcservo">-</span></div>
+  <div class="row"><span>Backlash lag pitch / yaw</span><span id="lash">-</span></div>
+  <h2>Blocker claws</h2>
+  <div class="row"><span>Servo cmd → actual R / L</span><span id="blockerservo">-</span></div>
+  <div class="row"><span>Claw R / L</span><span id="claws">-</span></div>
+  <div class="row"><span>Exhaust blocked</span><span id="blocked">-</span></div>
+  <h2>Leg keeper and legs</h2>
+  <div class="row"><span>Keeper servo / ring</span><span id="keeper">-</span></div>
+  <div class="row"><span>Leg angles</span><span id="legs">-</span></div>
+  <div class="row"><span>Locked out / failed</span><span id="latch">-</span></div>
+  <div class="row"><span>Foot force (N)</span><span id="foot">-</span></div>
+  <div class="row"><span>Plunger load (N)</span><span id="plunger">-</span></div>
   <canvas id="chart"></canvas>
   <div id="conditions"></div>
   <div id="result"></div>
@@ -46,21 +63,31 @@
   <button id="nominal" class="hidden">Normal flight</button>
   <button id="random" class="hidden">Random flight</button>
   <button id="play">Play</button>
-  <select id="speed">
+  <select id="speed" title="Playback speed">
+    <option value="0.02">0.02x</option>
+    <option value="0.05">0.05x</option>
+    <option value="0.1">0.1x</option>
     <option value="0.25">0.25x</option>
     <option value="0.5">0.5x</option>
     <option value="1" selected>1x</option>
     <option value="2">2x</option>
+    <option value="4">4x</option>
   </select>
+  <button id="slow" title="Toggle slow motion (S)">Slow-mo</button>
   <input id="timeline" type="range" min="0" max="1" step="0.01" value="0">
   <span id="clock">0.00 s</span>
+  <label>Jump to
+    <select id="jump"><option value="">...</option></select>
+  </label>
   <label>Camera
     <select id="camera">
       <option value="follow">Follow rocket</option>
+      <option value="aft">Aft close-up (rides the rocket)</option>
       <option value="pad">From the pad</option>
       <option value="free">Free</option>
     </select>
   </label>
+  <button id="shell" title="Make the printed shells see-through (T)">See-through shell</button>
   <label>Rocket size <input id="size" type="range" min="1" max="10" step="0.5" value="1"></label>
   <button id="open">Open CSV</button>
   <input id="file" type="file" accept=".csv" class="hidden">
@@ -78,6 +105,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 const DEG = Math.PI / 180;
 const STATE_COLORS = { Pad: '#9aa5b1', Boost: '#ff8a3d', Coast: '#4da3ff', LandingBurn: '#ff4d4d' };
@@ -85,7 +113,7 @@ const $ = id => document.getElementById(id);
 
 // ---------- Scene, sky and light ----------
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
@@ -97,7 +125,7 @@ const HORIZON = new THREE.Color(0xcfe3f2);
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(HORIZON, 60, 450);
 
-const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.02, 2000);
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.01, 2000);
 camera.position.set(4, 1.5, 4);
 const controls = new OrbitControls(camera, renderer.domElement);
 
@@ -114,8 +142,8 @@ scene.add(new THREE.HemisphereLight(0xe3f0ff, 0x52633a, 1.1));
 const sun = new THREE.DirectionalLight(0xfff0d8, 2.8);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.normalBias = 0.02;
-Object.assign(sun.shadow.camera, { left: -4, right: 4, top: 4, bottom: -4, near: 0.1, far: 60 });
+sun.shadow.normalBias = 0.01;
+Object.assign(sun.shadow.camera, { left: -2, right: 2, top: 2, bottom: -2, near: 0.1, far: 60 });
 scene.add(sun, sun.target);
 
 // The sim's world is x east, y north, z up. Three.js has y up, so tip the whole sim world over.
@@ -147,7 +175,7 @@ function buildField(text) {
   for (let j = 0; j < n; j++) {
     for (let i = 0; i < n; i++) {
       const x = -size + i * step, y = -size + j * step;
-      const underPad = 1 - smoothstep(0.55, 0.9, Math.hypot(x, y));
+      const underPad = 1 - smoothstep(0.35, 0.6, Math.hypot(x, y));
       const z = (heights ? heights[j][i] : 0) * (1 - underPad) - 0.02 * underPad;
       positions.push(x, y, z);
       if (i < n - 1 && j < n - 1) {
@@ -175,9 +203,9 @@ function buildField(text) {
 
 // The launch pad: a concrete slab with a steel blast plate. Its top is where the nozzle starts.
 const pad = new THREE.Group();
-const concrete = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.1), new THREE.MeshStandardMaterial({ color: 0x9a9a96, roughness: 0.9 }));
+const concrete = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.1), new THREE.MeshStandardMaterial({ color: 0x9a9a96, roughness: 0.9 }));
 concrete.position.z = -0.05;
-const plate = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.01, 32).rotateX(Math.PI / 2),
+const plate = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 0.01, 32).rotateX(Math.PI / 2),
                              new THREE.MeshStandardMaterial({ color: 0x8a8f96, metalness: 0.6, roughness: 0.4 }));
 plate.position.z = 0.002;
 pad.add(concrete, plate);
@@ -185,92 +213,137 @@ pad.traverse(part => { part.castShadow = part.receiveShadow = true; });
 simWorld.add(pad);
 buildField(null);
 
-// ---------- Rocket model ----------
+// ---------- The CAD rocket ----------
+// vehicle/vehicle.json says how the links hang together and where every joint is. Each link has a mesh
+// (a GLB made from the CAD, in the link's own frame). Every frame the joint angles from the flight log are
+// turned into a pose for each link, exactly the way the sim does it (sim/mechanism.cpp, computePoses).
 
-// Built in the rocket's body frame: x points out the nose, x = 0 is the bottom of the rocket.
-function buildRocket(dims) {
-  const L = dims.body_length, r = dims.body_diameter / 2, noseLength = 0.15;
-  const white = new THREE.MeshStandardMaterial({ color: 0xf4f4f2, roughness: 0.35 });
-  const black = new THREE.MeshStandardMaterial({ color: 0x1d1f22, roughness: 0.5 });
-  const orange = new THREE.MeshStandardMaterial({ color: 0xff6a1a, roughness: 0.45 });
-  const metal = new THREE.MeshStandardMaterial({ color: 0x8c9096, metalness: 0.8, roughness: 0.35 });
-  const alongX = geometry => geometry.rotateZ(-Math.PI / 2);  // three.js builds along y, the rocket points along x
+const root = new THREE.Group();    // sits on the CG and turns with the rocket
+const bottom = new THREE.Group();  // the body frame: x out the nose, 0 at the aft end of the ascent motor
+root.add(bottom);
+simWorld.add(root);
 
-  const root = new THREE.Group();    // sits on the CG and turns with the rocket
-  const bottom = new THREE.Group();  // the bottom of the rocket, every part hangs off this
-  root.add(bottom);
+let vehicle = null;
+const parts = {};                  // link name -> { group, link, origin, axis }
+const shellMaterials = [];         // materials of the printed shells, for the see-through switch
+let flame = null, fireLight = null, spentCase = null;
+let nozzleAscent = 0, nozzleLanding = 0, pivotX = 0;
 
-  const tube = new THREE.Mesh(alongX(new THREE.CylinderGeometry(r, r, L - noseLength, 32)), white);
-  tube.position.x = (L - noseLength) / 2;
+const vec = a => new THREE.Vector3(a[0], a[1], a[2]);
 
-  // Rounded nose cone, spun from its outline
-  const outline = [];
-  for (let i = 0; i <= 16; i++) {
-    const h = noseLength * i / 16;
-    outline.push(new THREE.Vector2(r * Math.sqrt(1 - (h / noseLength) ** 2), h));
+function shellLook(see) {
+  for (const m of shellMaterials) {
+    m.transparent = see;
+    m.opacity = see ? 0.14 : 1;
+    m.depthWrite = !see;
+    m.needsUpdate = true;
   }
-  const nose = new THREE.Mesh(alongX(new THREE.LatheGeometry(outline, 32)), orange);
-  nose.position.x = L - noseLength;
+}
 
-  // An avionics band near the top, and a stripe down the side that shows the roll
-  const band = new THREE.Mesh(alongX(new THREE.CylinderGeometry(r * 1.01, r * 1.01, 0.05, 32)), black);
-  band.position.x = L - noseLength - 0.08;
-  const stripe = new THREE.Mesh(new THREE.BoxGeometry(L - noseLength - 0.2, 0.012, 0.004), orange);
-  stripe.position.set((L - noseLength) / 2 - 0.05, 0, r);
-  bottom.add(tube, nose, band, stripe);
+async function loadVehicle(base) {
+  vehicle = await (await fetch(base + 'vehicle.json')).json();
+  const loader = new GLTFLoader();
+  await Promise.all(vehicle.link_order.map(async name => {
+    const L = vehicle.links[name];
+    const group = new THREE.Group();
+    group.matrixAutoUpdate = false;
+    const joint = L.joint || null;
+    parts[name] = { group, link: L, origin: vec(L.origin), axis: joint ? vec(joint.axis).normalize() : null,
+                    neutral: joint ? (joint.value_at_neutral_deg || 0) : 0 };
+    if (L.mesh) {
+      const gltf = await loader.loadAsync(base + L.mesh);
+      gltf.scene.traverse(o => {
+        if (!o.isMesh) return;
+        o.material = o.material.clone();
+        o.castShadow = true;
+        o.receiveShadow = true;
+        const label = (o.name || '') + (o.parent ? o.parent.name : '');
+        if (label.includes('shell:')) shellMaterials.push(o.material);
+      });
+      group.add(gltf.scene);
+    }
+    bottom.add(group);
+  }));
 
-  // The motor mount, nozzle and flame swing around the gimbal pivot
-  const gimbal = new THREE.Group();
-  gimbal.position.x = dims.gimbal_position;
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(r * 0.8, 0.004, 8, 32).rotateY(Math.PI / 2), metal);
-  const nozzle = new THREE.Mesh(alongX(new THREE.CylinderGeometry(0.015, 0.011, 0.03, 16)), black);
-  nozzle.position.x = -dims.gimbal_position - 0.01;
+  const c = vehicle.contacts;
+  nozzleAscent = c.nozzle_exit_ascent[0];
+  nozzleLanding = c.nozzle_exit_landing[0];
+  pivotX = vehicle.tvc.pivot[0];
+  buildFlame();
+  buildSpentCase();
+  shellLook($('shell').classList.contains('on'));
+}
 
-  // Flame: a bright core inside a softer orange cone, both 1 m long and scaled with thrust
+// The flame hangs off the cartridge so it swings with the gimbal. It starts at the nozzle that is burning:
+// the ascent motor's, then the landing motor's once the spent case has gone.
+function buildFlame() {
   const glow = color => new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.8,
                                                       blending: THREE.AdditiveBlending, depthWrite: false });
-  const flame = new THREE.Group();
-  flame.add(new THREE.Mesh(new THREE.ConeGeometry(0.03, 1, 16, 1, true).rotateZ(Math.PI / 2).translate(-0.5, 0, 0), glow(0xff8a2a)),
-            new THREE.Mesh(new THREE.ConeGeometry(0.013, 0.55, 12, 1, true).rotateZ(Math.PI / 2).translate(-0.275, 0, 0), glow(0xfff2b0)));
-  flame.position.x = -dims.gimbal_position - 0.025;
-  const fireLight = new THREE.PointLight(0xff9a40, 0, 8, 2);  // lights up the grass under the flame
-  fireLight.position.x = -0.15;
+  flame = new THREE.Group();
+  flame.add(new THREE.Mesh(new THREE.ConeGeometry(0.014, 0.4, 16, 1, true).rotateZ(Math.PI / 2).translate(-0.2, 0, 0), glow(0xff8a2a)),
+            new THREE.Mesh(new THREE.ConeGeometry(0.006, 0.22, 12, 1, true).rotateZ(Math.PI / 2).translate(-0.11, 0, 0), glow(0xfff2b0)));
+  fireLight = new THREE.PointLight(0xff9a40, 0, 6, 2);
+  fireLight.position.x = -0.1;
   flame.add(fireLight);
-  gimbal.add(ring, nozzle, flame);
-  bottom.add(gimbal);
+  parts.cartridge.group.add(flame);
+}
 
-  // Four legs with foot pads, folded against the body until the descent
-  const legs = [];
-  for (let i = 0; i < 4; i++) {
-    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 1, 8), black);
-    const foot = new THREE.Mesh(alongX(new THREE.CylinderGeometry(0.018, 0.018, 0.008, 16)), metal);
-    legs.push({ strut, foot, angle: (i + 0.5) * Math.PI / 2 });
-    bottom.add(strut, foot);
+// The spent ascent motor after the landing motor kicks it out: a copy of the CAD motor
+function buildSpentCase() {
+  spentCase = new THREE.Group();
+  const source = parts.ascent_motor.group.children[0];
+  if (source) spentCase.add(source.clone());
+  spentCase.visible = false;
+  simWorld.add(spentCase);
+}
+
+// Where each joint is, in radians, from a row of the flight log
+function jointAngles(f) {
+  const q = {
+    outer_ring: f.gimbal_z_deg, cartridge: f.gimbal_y_deg,
+    claw_R: f.claw_r_deg, claw_L: f.claw_l_deg,
+    blocker_horn_R: f.blocker_r_servo, blocker_horn_L: f.blocker_l_servo,
+    tvc_horn_yaw: f.tvc_yaw_servo, tvc_horn_pitch: f.tvc_pitch_servo,
+    keeper_horn: f.keeper_servo, keeper_ring: f.keeper_ring_deg,
+    leg_1: f.leg1_deg, leg_2: f.leg2_deg, leg_3: f.leg3_deg, leg_4: f.leg4_deg,
+  };
+  return q;
+}
+
+const poses = {};
+const tmpQ = new THREE.Quaternion(), tmpV = new THREE.Vector3(), tmpM = new THREE.Matrix4(), unit = new THREE.Quaternion();
+
+function applyPoses(f) {
+  const q = jointAngles(f);
+  for (const name of vehicle.link_order) {
+    const p = parts[name];
+    const parent = p.link.parent ? poses[p.link.parent] : null;
+    let rot = new THREE.Quaternion();
+    if (p.axis && q[name] !== undefined) rot.setFromAxisAngle(p.axis, (q[name] - p.neutral) * DEG);
+    if (!parent) {
+      poses[name] = { q: rot, t: p.origin.clone() };
+    } else {
+      const po = parts[p.link.parent].origin;
+      poses[name] = { q: parent.q.clone().multiply(rot),
+                      t: p.origin.clone().sub(po).applyQuaternion(parent.q).add(parent.t) };
+    }
   }
-
-  root.traverse(part => { part.castShadow = true; });
-  flame.traverse(part => { part.castShadow = false; });
-  return { root, bottom, gimbal, flame, fireLight, legs, radius: r, legSpan: dims.leg_span, legDrop: dims.leg_drop };
-}
-
-// Stretch a unit-length cylinder so it runs from point a to point b
-function placeBetween(mesh, a, b) {
-  const direction = new THREE.Vector3().subVectors(b, a);
-  mesh.position.copy(a).addScaledVector(direction, 0.5);
-  mesh.scale.set(1, direction.length(), 1);
-  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
-}
-
-function setLegs(rocket, deployed) {
-  for (const { strut, foot, angle } of rocket.legs) {
-    const side = new THREE.Vector3(0, Math.cos(angle), Math.sin(angle));
-    const hinge = new THREE.Vector3(0.3, 0, 0).addScaledVector(side, rocket.radius);
-    const folded = new THREE.Vector3(0.02, 0, 0).addScaledVector(side, rocket.radius + 0.01);
-    const open = new THREE.Vector3(-rocket.legDrop, 0, 0).addScaledVector(side, rocket.legSpan / 2);
-    const end = folded.lerp(open, deployed);
-    placeBetween(strut, hinge, end);
-    foot.position.copy(end);
-    foot.visible = deployed > 0.5;
+  // The pushrods and blocker links are free: put each between its two ends
+  for (const name of vehicle.link_order) {
+    const ends = parts[name].link.ends;
+    if (!ends) continue;
+    const at = (end) => {
+      const on = poses[end.on];
+      return vec(end.point).sub(parts[end.on].origin).applyQuaternion(on.q).add(on.t);
+    };
+    const a = at(ends[0]), b = at(ends[1]);
+    const a0 = vec(ends[0].point), b0 = vec(ends[1].point);
+    poses[name] = { q: new THREE.Quaternion().setFromUnitVectors(b0.sub(a0).normalize(), b.sub(a).normalize()), t: a };
+  }
+  for (const name of vehicle.link_order) {
+    const pose = poses[name];
+    parts[name].group.matrix.compose(pose.t, pose.q, new THREE.Vector3(1, 1, 1));
+    parts[name].group.matrixWorldNeedsUpdate = true;
   }
 }
 
@@ -302,7 +375,8 @@ function buildSmoke() {
     if (r.thrust < 1 || r.time - lastPuff < 0.03) continue;
     lastPuff = r.time;
     const nose = new THREE.Vector3(1, 0, 0).applyQuaternion(new THREE.Quaternion(r.qx, r.qy, r.qz, r.qw).normalize());
-    const nozzle = new THREE.Vector3(r.x, r.y, r.altitude + startCg).addScaledVector(nose, -r.cg);
+    const nozzleX = r.case_out >= 1 ? nozzleLanding : nozzleAscent;
+    const nozzle = new THREE.Vector3(r.x, r.y, r.altitude + startCg).addScaledVector(nose, nozzleX - r.cg);
     const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: puffTexture, color: 0xd8d4cc, transparent: true, depthWrite: false }));
     sprite.visible = false;
     simWorld.add(sprite);
@@ -316,27 +390,21 @@ function showSmoke(t, size) {
     puff.sprite.visible = age >= 0 && age < PUFF_LIFE;
     if (!puff.sprite.visible) continue;
     puff.sprite.position.copy(puff.nozzle)
-      .addScaledVector(puff.nose, -1.2 * (1 - Math.exp(-3 * age)))  // blown out of the nozzle
+      .addScaledVector(puff.nose, -1.0 * (1 - Math.exp(-3 * age)))  // blown out of the nozzle
       .addScaledVector(puff.wind, age)
       .add(new THREE.Vector3(0, 0, 0.2 * age));
-    puff.sprite.position.z = Math.max(puff.sprite.position.z, 0.1);  // smoke spreads out along the grass
-    puff.sprite.scale.setScalar((0.1 + 0.5 * age) * size);
+    puff.sprite.position.z = Math.max(puff.sprite.position.z, 0.05);  // smoke spreads out along the grass
+    puff.sprite.scale.setScalar((0.08 + 0.4 * age) * size);
     puff.sprite.material.opacity = 0.45 * (1 - age / PUFF_LIFE);
   }
 }
 
 // ---------- Flight data ----------
 
-let rows = [], rocket = null, trail = null, startCg = 0, descentStart = Infinity;
+let rows = [], trail = null, startCg = 0;
 let ejectRow = null, caseLandTime = Infinity;
 let time = 0, playing = false;
-
-// The spent ascent motor once the landing motor kicks it out: a brown cardboard tube
-const spentCase = new THREE.Mesh(new THREE.CylinderGeometry(0.0145, 0.0145, 0.114, 16).rotateZ(-Math.PI / 2),
-                                 new THREE.MeshStandardMaterial({ color: 0x9c7a4f, roughness: 0.8 }));
-spentCase.castShadow = true;
-spentCase.visible = false;
-simWorld.add(spentCase);
+let events = [];
 
 function parseCsv(text) {
   const lines = text.trim().split(/\r?\n/);
@@ -349,28 +417,38 @@ function parseCsv(text) {
   });
 }
 
-function loadFlight(csvText, summary, dims, conditions) {
+// The moments worth jumping to, found from the log
+function findEvents() {
+  const first = (name, test) => { const r = rows.find(test); if (r) events.push({ name, time: r.time }); };
+  events = [];
+  events.push({ name: 'Pad', time: 0 });
+  first('Liftoff', r => r.thrust > 1);
+  first('Coast (ascent motor burnt out)', r => r.state === 'Coast');
+  first('Leg keeper release', r => r.legs_released > 0);
+  first('Legs locked out', r => r.legs_latched === 15);
+  first('Landing motor lit', r => r.state === 'LandingBurn' && r.thrust > 1);
+  first('Spent motor ejected', r => r.case_out >= 1);
+  first('Claws closing', r => r.state === 'LandingBurn' && r.blocked_share > 0.05);
+  first('Touchdown', r => r.state === 'LandingBurn' && (r.foot1_n + r.foot2_n + r.foot3_n + r.foot4_n) > 0.5);
+  events.sort((a, b) => a.time - b.time);
+  const select = $('jump');
+  select.innerHTML = '<option value="">...</option>' + events.map((e, i) => `<option value="${i}">${e.name} (${e.time.toFixed(1)} s)</option>`).join('');
+}
+
+function loadFlight(csvText, summary, conditions) {
   rows = parseCsv(csvText);
-  if (rows.length < 2 || rows[0].qw === undefined) {
-    $('drop').textContent = 'This flight.csv is from an older tvc_sim. Rebuild it (make) and fly again.';
+  if (rows.length < 2 || rows[0].qw === undefined || rows[0].leg1_deg === undefined) {
+    $('drop').textContent = 'This flight.csv is from an older tvc_sim (no CAD joint columns). Rebuild it (make) and fly again.';
     $('drop').classList.remove('hidden');
     rows = [];
     return;
   }
-  dims = dims || { body_length: 0.8, body_diameter: 0.074, gimbal_position: 0.07, leg_span: 0.7, leg_drop: 0.08 };
   startCg = rows[0].cg;
-
-  // The legs come out at the top of the flight, like in the sim
-  const top = rows.reduce((best, r) => (r.altitude > best.altitude ? r : best), rows[0]);
-  descentStart = top.time;
   ejectRow = rows.find(r => r.case_out === 1) || null;
   const caseDown = rows.find(r => r.case_out === 2);
   caseLandTime = caseDown ? caseDown.time : Infinity;
-
-  if (rocket) simWorld.remove(rocket.root);
-  rocket = buildRocket(dims);
-  simWorld.add(rocket.root);
   buildSmoke();
+  findEvents();
 
   // Trail of where the CG went, colored by flight state
   if (trail) simWorld.remove(trail);
@@ -410,43 +488,65 @@ function sample(t) {
   const f = Math.min(Math.max((t - a.time) / (b.time - a.time || 1), 0), 1);
   const row = { state: a.state, index: lo };
   for (const key in a) if (key !== 'state') row[key] = a[key] + (b[key] - a[key]) * f;
+  // Counts and flags don't blend
+  for (const key of ['legs_released', 'legs_latched', 'legs_failed', 'case_out', 'gimbal_at_stop']) row[key] = a[key];
   return row;
 }
 
 // ---------- Drawing each frame ----------
 
+const bits = (n, count) => Array.from({ length: count }, (_, i) => (n >> i) & 1);
+
 function showFrame(t) {
+  if (!vehicle) return;
   const f = sample(t);
   const size = parseFloat($('size').value);
 
-  rocket.root.position.set(f.x, f.y, f.altitude + startCg);
-  rocket.root.quaternion.set(f.qx, f.qy, f.qz, f.qw).normalize();
-  rocket.bottom.position.x = -f.cg;
-  rocket.bottom.scale.setScalar(size);
-  rocket.gimbal.rotation.set(0, f.gimbal_y_deg * DEG, f.gimbal_z_deg * DEG, 'YZX');
-  setLegs(rocket, Math.min(Math.max((t - descentStart) / 0.4, 0), 1));
+  root.position.set(f.x, f.y, f.altitude + startCg);
+  root.quaternion.set(f.qx, f.qy, f.qz, f.qw).normalize();
+  bottom.position.x = -f.cg * size;
+  bottom.scale.setScalar(size);
+  applyPoses(f);
 
-  // Flame length follows thrust, with a little flicker
+  // The ascent motor leaves with the spent case once the landing motor lights
+  const gone = f.case_out >= 1;
+  parts.ascent_motor.group.visible = !gone;
+
+  // Flame length follows thrust, with a little flicker. It starts at the nozzle that is burning.
   const flicker = 0.9 + Math.random() * 0.2;
-  rocket.flame.visible = f.thrust > 0.5;
-  rocket.flame.scale.x = f.thrust * 0.035 * flicker;
-  rocket.fireLight.intensity = f.thrust > 0.5 ? f.thrust * 0.6 * flicker : 0;
+  const nozzleX = gone ? nozzleLanding : nozzleAscent;
+  flame.position.set(nozzleX - pivotX - 0.004, 0, 0);
+  flame.visible = f.thrust > 0.5;
+  flame.scale.x = f.thrust * 0.12 * flicker;
+  fireLight.intensity = f.thrust > 0.5 ? f.thrust * 0.15 * flicker : 0;
 
   trail.geometry.setDrawRange(0, f.index + 1);
   showSmoke(t, size);
-  showSpentCase(t, size);
+  showSpentCase(t, size, f);
 
+  const released = bits(f.legs_released, 4), latched = bits(f.legs_latched, 4), failed = bits(f.legs_failed, 4);
   $('state').textContent = f.state;
   $('state').style.color = STATE_COLORS[f.state];
   $('alt').textContent = f.altitude.toFixed(1) + ' m';
   $('vz').textContent = f.vz.toFixed(1) + ' m/s';
   $('vh').textContent = Math.hypot(f.vx, f.vy).toFixed(1) + ' m/s';
   $('tilt').textContent = f.tilt_deg.toFixed(1) + '°';
-  $('thrust').textContent = f.thrust.toFixed(1) + ' N';
-  $('gimbal').textContent = f.gimbal_y_deg.toFixed(1) + '° / ' + f.gimbal_z_deg.toFixed(1) + '°';
+  $('thrust').textContent = f.thrust.toFixed(1) + ' N (' + (f.throttle * 100).toFixed(0) + '%)';
   $('mass').textContent = (f.mass * 1000).toFixed(0) + ' g';
   $('drift').textContent = Math.hypot(f.x, f.y).toFixed(1) + ' m';
   $('wind').textContent = Math.hypot(f.wind_x, f.wind_y).toFixed(1) + ' m/s';
+  $('gimbal').textContent = f.gimbal_y_deg.toFixed(2) + '° / ' + f.gimbal_z_deg.toFixed(2) + '°' + (f.gimbal_at_stop ? ' STOP' : '');
+  $('tvcservo').textContent = `${f.cmd_tvc_yaw_servo.toFixed(1)}→${f.tvc_yaw_servo.toFixed(1)}° / ${f.cmd_tvc_pitch_servo.toFixed(1)}→${f.tvc_pitch_servo.toFixed(1)}°`;
+  $('lash').textContent = f.gimbal_lash_y_deg.toFixed(2) + '° / ' + f.gimbal_lash_z_deg.toFixed(2) + '°';
+  $('blockerservo').textContent = `${f.cmd_blocker_servo.toFixed(0)}→${f.blocker_r_servo.toFixed(0)}° / ${f.blocker_l_servo.toFixed(0)}°`;
+  $('claws').textContent = f.claw_r_deg.toFixed(1) + '° / ' + f.claw_l_deg.toFixed(1) + '°';
+  $('blocked').textContent = (f.blocked_share * 100).toFixed(0) + '% of full close';
+  $('keeper').textContent = f.cmd_keeper_servo.toFixed(0) + '→' + f.keeper_servo.toFixed(1) + '° / ring ' + f.keeper_ring_deg.toFixed(1) + '°';
+  $('legs').textContent = [f.leg1_deg, f.leg2_deg, f.leg3_deg, f.leg4_deg].map(a => a.toFixed(0)).join(' / ') + '°';
+  const nLatched = latched.reduce((a, b) => a + b, 0), nFailed = failed.reduce((a, b) => a + b, 0);
+  $('latch').innerHTML = `<span class="${nLatched === 4 ? 'ok' : 'warn'}">${nLatched}/4</span> / <span class="${nFailed ? 'bad' : 'ok'}">${nFailed}</span>`;
+  $('foot').textContent = [f.foot1_n, f.foot2_n, f.foot3_n, f.foot4_n].map(a => a.toFixed(0)).join(' / ');
+  $('plunger').textContent = [f.plunger1_n, f.plunger2_n, f.plunger3_n, f.plunger4_n].map(a => a.toFixed(0)).join(' / ');
   $('clock').textContent = t.toFixed(2) + ' s';
   $('timeline').value = t;
   $('result').style.display = t >= rows[rows.length - 1].time - 0.02 ? 'block' : 'none';
@@ -455,22 +555,27 @@ function showFrame(t) {
 }
 
 // The spent case tumbles end over end as it falls, then lies flat on the grass
-function showSpentCase(t, size) {
+const caseOffset = new THREE.Vector3();
+function showSpentCase(t, size, f) {
   spentCase.visible = ejectRow !== null && t >= ejectRow.time;
   if (!spentCase.visible) return;
-  const f = sample(t);
-  spentCase.position.set(f.case_x, f.case_y, f.case_z);
-  spentCase.scale.setScalar(size);
+  // The mesh sits on the landing/ascent motor link origin; its centre is 0.077 m further down
+  const centre = parts.ascent_motor.link.cg ? vec(parts.ascent_motor.link.cg) : new THREE.Vector3(-0.077, 0, 0);
+  let q;
   if (t >= caseLandTime) {
-    spentCase.quaternion.identity();  // lying along the ground
+    q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0));
   } else {
     const leftRocket = new THREE.Quaternion(ejectRow.qx, ejectRow.qy, ejectRow.qz, ejectRow.qw).normalize();
     const tumble = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 8 * (t - ejectRow.time));
-    spentCase.quaternion.copy(leftRocket).multiply(tumble);
+    q = leftRocket.multiply(tumble);
   }
+  spentCase.quaternion.copy(q);
+  spentCase.scale.setScalar(size);
+  caseOffset.copy(centre).multiplyScalar(size).applyQuaternion(q);
+  spentCase.position.set(f.case_x, f.case_y, f.case_z).sub(caseOffset);
 }
 
-// Altitude over the whole flight, with a line showing where we are now
+// The chart: altitude over the whole flight, with a line showing where we are now
 function drawChart(t) {
   const canvas = $('chart');
   const w = canvas.width = canvas.clientWidth * devicePixelRatio;
@@ -503,17 +608,37 @@ const rocketPosition = new THREE.Vector3();
 const lastRocketPosition = new THREE.Vector3();
 
 function setCamera(mode) {
-  if (!rocket) return;
-  rocket.root.getWorldPosition(rocketPosition);
-  if (mode === 'follow') camera.position.copy(rocketPosition).add(new THREE.Vector3(3, 0.6, 3));
-  if (mode === 'pad') camera.position.set(12, 1.7, 12);
-  if (mode === 'free') camera.position.set(30, 20, 30);
+  if (!rows.length) return;
+  root.getWorldPosition(rocketPosition);
+  controls.enabled = mode !== 'aft';
+  if (mode === 'follow') camera.position.copy(rocketPosition).add(new THREE.Vector3(1.6, 0.4, 1.6));
+  if (mode === 'pad') camera.position.set(8, 1.2, 8);
+  if (mode === 'free') camera.position.set(25, 15, 25);
+  if (mode !== 'aft') camera.up.set(0, 1, 0);
   controls.target.copy(mode === 'free' ? new THREE.Vector3(0, 15, 0) : rocketPosition);
   lastRocketPosition.copy(rocketPosition);
 }
 
+// The aft close-up rides on the rocket: it looks up from just behind and below the nozzle at the gimbal, the
+// blocker claws and the leg hinges, and the rocket's own tumbling keeps the view steady
+const eye = new THREE.Vector3(), aim = new THREE.Vector3(), up = new THREE.Vector3(), origin = new THREE.Vector3();
+function aftCamera(size) {
+  root.updateMatrixWorld(true);
+  eye.set(-0.17, 0.085, 0.105).multiplyScalar(size);
+  aim.set(0.128, 0, 0).multiplyScalar(size);
+  bottom.localToWorld(eye);
+  bottom.localToWorld(aim);
+  origin.set(0, 0, 0);
+  bottom.localToWorld(origin);
+  up.set(0, 0, 1);
+  bottom.localToWorld(up).sub(origin).normalize();
+  camera.position.copy(eye);
+  camera.up.copy(up);
+  camera.lookAt(aim);
+}
+
 function moveCamera() {
-  rocket.root.getWorldPosition(rocketPosition);
+  root.getWorldPosition(rocketPosition);
   const mode = $('camera').value;
   if (mode === 'follow') {
     // Move the camera along with the rocket, you can still drag to orbit around it
@@ -521,6 +646,7 @@ function moveCamera() {
     controls.target.copy(rocketPosition);
   }
   if (mode === 'pad') controls.target.copy(rocketPosition);
+  if (mode === 'aft') aftCamera(parseFloat($('size').value));
   lastRocketPosition.copy(rocketPosition);
 
   // Keep the sun's shadow box centered on the rocket
@@ -530,6 +656,18 @@ function moveCamera() {
 
 // ---------- Controls ----------
 
+const SLOW = 0.1;
+let beforeSlow = null;
+function toggleSlow() {
+  const speed = $('speed');
+  if (beforeSlow === null) { beforeSlow = speed.value; speed.value = String(SLOW); $('slow').classList.add('on'); }
+  else { speed.value = beforeSlow; beforeSlow = null; $('slow').classList.remove('on'); }
+}
+function toggleShell() {
+  $('shell').classList.toggle('on');
+  shellLook($('shell').classList.contains('on'));
+}
+
 $('play').onclick = () => {
   if (!rows.length) return;
   if (time >= rows[rows.length - 1].time) time = 0;  // replay from the start
@@ -537,11 +675,21 @@ $('play').onclick = () => {
 };
 $('timeline').oninput = event => { time = parseFloat(event.target.value); playing = false; };
 $('camera').onchange = event => setCamera(event.target.value);
+$('slow').onclick = toggleSlow;
+$('shell').onclick = toggleShell;
+$('jump').onchange = event => {
+  if (event.target.value === '') return;
+  time = Math.max(0, events[parseInt(event.target.value)].time - 0.15);
+  playing = false;
+  event.target.value = '';
+};
 $('open').onclick = () => $('file').click();
 $('file').onchange = async event => loadFlight(await event.target.files[0].text());
 
 window.addEventListener('keydown', event => {
   if (event.code === 'Space') { event.preventDefault(); $('play').click(); }
+  if (event.code === 'KeyS') toggleSlow();
+  if (event.code === 'KeyT') toggleShell();
 });
 window.addEventListener('dragover', event => event.preventDefault());
 window.addEventListener('drop', async event => {
@@ -563,7 +711,7 @@ function animate(now) {
   const dt = Math.min((now - lastFrame) / 1000, 0.1);
   lastFrame = now;
 
-  if (rows.length) {
+  if (rows.length && vehicle) {
     const end = rows[rows.length - 1].time;
     if (playing) time += dt * parseFloat($('speed').value);
     if (time >= end) { time = end; playing = false; }
@@ -571,11 +719,22 @@ function animate(now) {
     showFrame(time);
     moveCamera();
   }
-  controls.update();
+  if (controls.enabled) controls.update();
   sky.position.copy(camera.position);
   renderer.render(scene, camera);
 }
 requestAnimationFrame(animate);
+
+// A hook for screenshots and tests
+window.viewer = {
+  seek(t, camera_mode) {
+    if (camera_mode) { $('camera').value = camera_mode; setCamera(camera_mode); }
+    time = t; playing = false;
+  },
+  events: () => events,
+  setSize(v) { $('size').value = v; },
+  shell(on) { if ($('shell').classList.contains('on') !== on) toggleShell(); },
+};
 
 // Flights come from flights/normal.json and flights/random-N.json. Online those are saved
 // flights, and when tools/view.py is running it flies a fresh one each time.
@@ -591,7 +750,7 @@ async function fly(randomFlight) {
       $('drop').classList.remove('hidden');
     } else {
       buildField(flight.terrain);
-      loadFlight(flight.csv, flight.summary, flight.rocket, flight.conditions);
+      loadFlight(flight.csv, flight.summary, flight.conditions);
     }
   } finally {
     $('random').disabled = $('nominal').disabled = false;
@@ -599,7 +758,12 @@ async function fly(randomFlight) {
   }
 }
 
-if (location.protocol.startsWith('http')) {
+try {
+  await loadVehicle('vehicle/');
+} catch (error) {
+  $('drop').textContent = 'Could not load vehicle/vehicle.json and the meshes (run tools/view.py, or python tools/view.py --web first): ' + error;
+}
+if (location.protocol.startsWith('http') && vehicle) {
   $('nominal').classList.remove('hidden');
   $('random').classList.remove('hidden');
   $('nominal').onclick = () => fly(false);

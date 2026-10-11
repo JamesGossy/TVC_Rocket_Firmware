@@ -2,16 +2,22 @@
 
     python tools/view.py               opens the viewer, flying rocket.cfg
     python tools/view.py other.cfg     uses a different config
-    python tools/view.py --web         saves the normal flight and 20 random ones into docs/flights
+    python tools/view.py --web         saves the normal flight and 20 random ones into docs/flights,
+                                       and copies vehicle/vehicle.json and the meshes into docs/vehicle,
                                        for the online viewer (GitHub Pages)
+
+The viewer builds the rocket from vehicle/vehicle.json and the GLB meshes next to it (made by
+tools/export_cad.py), and animates every joint from the flight log.
 
 "Random flight" flies again with randomized wind, motors, mass and so on, the same way the
 Monte Carlo does. Press Ctrl+C here to stop.
 """
 import http.server
 import json
+import mimetypes
 import os
 import random
+import shutil
 import subprocess
 import sys
 import webbrowser
@@ -19,20 +25,12 @@ import webbrowser
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SIM = os.path.join(ROOT, "tvc_sim.exe" if os.name == "nt" else "tvc_sim")
 VIEWER = os.path.join(ROOT, "docs", "index.html")
+VEHICLE_DIR = os.path.join(ROOT, "vehicle")
 WEB_FLIGHTS = os.path.join(ROOT, "docs", "flights")
+WEB_VEHICLE = os.path.join(ROOT, "docs", "vehicle")
 RANDOM_FLIGHTS = 20  # how many random flights the online viewer gets (it picks one at random)
 args = [a for a in sys.argv[1:] if a != "--web"]
 CONFIG = os.path.abspath(args[0] if args else os.path.join(ROOT, "rocket.cfg"))
-
-
-def read_config(path):
-    values = {}
-    for line in open(path):
-        line = line.split("#")[0]
-        if "=" in line:
-            name, value = line.split("=", 1)
-            values[name.strip()] = value.strip()
-    return values
 
 
 # Fly once (seed None = the normal flight) and bundle up everything the viewer needs
@@ -49,27 +47,32 @@ def fly(seed=None):
     summary = "\n\n".join(blocks[2:] if seed is not None else blocks[1:])
     print("Random" if seed is not None else "Normal", "flight:", blocks[-1])
 
-    cfg = read_config(CONFIG)
-    dims = ["body_length", "body_diameter", "gimbal_position", "leg_span", "leg_drop"]
     return {
         "csv": open(os.path.join(ROOT, "flight.csv")).read(),
         "terrain": open(os.path.join(ROOT, "terrain.csv")).read(),
         "conditions": conditions,
         "summary": summary,
-        "rocket": {name: float(cfg[name]) for name in dims},
     }
 
 
-# The viewer asks for flights/normal.json and flights/random-N.json. Online those are saved
-# files, here we fly them fresh.
+# The viewer asks for flights/normal.json, flights/random-N.json and vehicle/*. Online those are
+# saved files, here the flights are flown fresh and the vehicle files come from vehicle/.
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/":
+        path = self.path.split("?")[0]
+        if path == "/":
             self.reply("text/html", open(VIEWER, "rb").read())
-        elif self.path == "/flights/normal.json":
+        elif path == "/flights/normal.json":
             self.reply("application/json", json.dumps(fly()).encode())
-        elif self.path.startswith("/flights/random-"):
+        elif path.startswith("/flights/random-"):
             self.reply("application/json", json.dumps(fly(random.randint(1, 999999))).encode())
+        elif path.startswith("/vehicle/") and ".." not in path:
+            file = os.path.join(VEHICLE_DIR, *path[len("/vehicle/"):].split("/"))
+            if os.path.isfile(file):
+                kind = "model/gltf-binary" if file.endswith(".glb") else (mimetypes.guess_type(file)[0] or "application/octet-stream")
+                self.reply(kind, open(file, "rb").read())
+            else:
+                self.send_error(404)
         else:
             self.send_error(404)
 
@@ -77,6 +80,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(body)
 
@@ -94,13 +98,21 @@ def save_web_flights():
             json.dump(flight, f, separators=(",", ":"))
     print("Saved", len(flights), "flights to", WEB_FLIGHTS)
 
+    # the rocket itself: vehicle.json and the meshes it lists (not the raw CAD exports)
+    os.makedirs(os.path.join(WEB_VEHICLE, "meshes"), exist_ok=True)
+    shutil.copy(os.path.join(VEHICLE_DIR, "vehicle.json"), WEB_VEHICLE)
+    for name in os.listdir(os.path.join(VEHICLE_DIR, "meshes")):
+        if name.endswith(".glb"):
+            shutil.copy(os.path.join(VEHICLE_DIR, "meshes", name), os.path.join(WEB_VEHICLE, "meshes"))
+    print("Copied the vehicle to", WEB_VEHICLE)
+
 
 def main():
     if "--web" in sys.argv:
         save_web_flights()
         return
 
-    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)  # port 0 = any free port
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)  # port 0 = any free port
     url = f"http://127.0.0.1:{server.server_port}/"
     print("Viewer running at", url, "- press Ctrl+C to stop")
     webbrowser.open(url)
