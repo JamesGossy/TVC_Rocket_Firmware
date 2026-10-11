@@ -11,3 +11,4 @@ validation/output/
 # Python
 .venv/
 __pycache__/
+vehicle/raw/
