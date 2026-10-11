@@ -1,0 +1,45 @@
+{
+ "note": "Point masses for things the CAD does not model. Edit here, then rerun tools/build_vehicle.py. box_mm is the X, Y, Z size used for the inertia; cad_z_mm is the Fusion world Z of the centre.",
+ "items": [
+  {
+   "name": "avionics (FC + IMU + GNSS + baro)",
+   "mass_kg": 0.04,
+   "cad_z_mm": 335.0,
+   "box_mm": [
+    60,
+    50,
+    20
+   ]
+  },
+  {
+   "name": "battery (2S ~450-500 mAh LiPo)",
+   "mass_kg": 0.035,
+   "cad_z_mm": 320.0,
+   "box_mm": [
+    55,
+    30,
+    15
+   ]
+  },
+  {
+   "name": "wiring + connectors",
+   "mass_kg": 0.01,
+   "cad_z_mm": 200.0,
+   "box_mm": [
+    60,
+    60,
+    40
+   ]
+  },
+  {
+   "name": "roll reaction wheel (REMOVED: bay is empty)",
+   "mass_kg": 0.0,
+   "cad_z_mm": 204.5,
+   "box_mm": [
+    66,
+    66,
+    30
+   ]
+  }
+ ]
+}
