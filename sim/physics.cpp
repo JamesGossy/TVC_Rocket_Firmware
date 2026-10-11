@@ -9,16 +9,9 @@ struct Derivative {
     Vec3 angular_acceleration;
 };
 
-static double airDensity(double altitude) {
+double airDensity(double altitude) {
     // Simple exponential atmosphere, fine for a few hundred meters
     return 1.225 * std::exp(-altitude / 8500.0);
-}
-
-// Which way the motor pushes (body frame) for a given gimbal angle
-static Vec3 thrustDirection(double gimbal_y, double gimbal_z) {
-    return {std::cos(gimbal_y) * std::cos(gimbal_z),
-            std::sin(gimbal_z),
-            -std::sin(gimbal_y) * std::cos(gimbal_z)};
 }
 
 Ground::Ground(const Config& cfg, std::mt19937& rng) : cfg(cfg) {
@@ -65,85 +58,155 @@ Vec3 Ground::normal(double x, double y) const {
 }
 
 double Ground::stiffness(double x, double y) const {
-    return cfg.leg_stiffness * std::max(0.3, 1 + waves(soft, x, y));
+    return cfg.ground_stiffness * std::max(0.3, 1 + waves(soft, x, y));
 }
 
-// Points that can touch the ground, measured from the bottom of the rocket.
-// The four feet (sitting higher once their leg has stroked), plus the nozzle and the nose tip
-// for when it falls over.
-static std::array<Vec3, 6> contactPoints(const Config& cfg, const LegTravel& travel) {
-    double d = cfg.leg_span / 2 * std::sqrt(0.5);  // feet sit at 45 deg between the y and z axes
-    double foot = -cfg.leg_drop;
-    return {{{foot + travel[0], d, d}, {foot + travel[1], -d, d}, {foot + travel[2], -d, -d},
-             {foot + travel[3], d, -d}, {0, 0, 0}, {cfg.body_length, 0, 0}}};
+// ---------------------------------------------------------------------------------------------------------------
+// The feet. Each is an EPS ball on the end of a carbon tube. Pressing it into the ground has two parts:
+//   - springy: the grass, in series with the tube bending sideways under the part of the force that is across it
+//   - permanent: the ball crushes. Pushing the ball in by s flattens a patch of area pi (2 R s - s^2), and the foam
+//     holds up a crush stress sigma over that patch, so the crush force is sigma pi (2 R s - s^2).
+// A hard hit: the force climbs the crush curve. Letting go: it springs back along the stiff part only, and a
+// second hit does nothing new until it pushes past the deepest crush so far.
+// Past half way (s = R) the patch can't get any wider than the ball, so the crush force levels off at
+// sigma pi R^2 until the ball is squashed flat (s = 2 R), and after that the foot is rigid.
+// ---------------------------------------------------------------------------------------------------------------
+struct FootContact {
+    double force = 0;     // N along the ground normal, before damping
+    double stiffness = 0; // N/m of the springy part
+    double compression = 0;
+    Vec3 out;             // ground normal, world
+    Vec3 centre, point;   // world
+    Vec3 arm;             // from the CG to the contact point, body frame
+    bool touching = false;
+    bool crushing = false;  // the foam is giving way right now (no extra damping then, the crush already soaks up the energy)
+};
+
+// What the foam holds up when it has been crushed s deep
+static double crushForce(double s, double R, double sigma) {
+    s = std::min(s, R);
+    return sigma * PI * (2 * R * s - s * s);
+}
+
+// Crush depth that goes with a given total compression p (the plastic branch), for crush stress sigma.
+// p = s + F(s) / k_e: the foam crushes s and the grass and tube give the rest.
+static double plasticCrush(double p, double R, double sigma, double k_e) {
+    double c = sigma * PI / k_e;
+    double b = 1 + 2 * R * c;
+    double disc = std::max(0.0, b * b - 4 * c * p);
+    double s = (b - std::sqrt(disc)) / (2 * c);
+    if (s <= R) return s;
+    double plateau = crushForce(R, R, sigma);
+    return std::min(2 * R, std::max(R, p - plateau / k_e));
+}
+
+// The foot's force for a total compression p, with s_old crushed so far (the deepest crush before this)
+static double footForce(double p, double s_old, double R, double sigma, double k_e, double& s_now) {
+    double springy = k_e * std::max(0.0, p - s_old);
+    s_now = s_old;
+    if (springy <= crushForce(s_old, R, sigma) && s_old < 2 * R) return springy;
+    s_now = std::max(s_old, plasticCrush(p, R, sigma, k_e));
+    double crush = crushForce(s_now, R, sigma);
+    if (s_now >= 2 * R) return std::max(crush, k_e * (p - 2 * R));  // squashed flat: rigid
+    return crush;
+}
+
+static FootContact footContact(const Config& cfg, const StepInputs& in, const RigidBodyState& s, int i) {
+    FootContact f;
+    const Ground& ground = *in.ground;
+    double R = in.foot_radius;
+    Vec3 arm = in.foot_centre[i] - in.body.cg;
+    f.centre = s.position + rotate(s.attitude, arm);
+    double clear = f.centre.z - ground.height(f.centre.x, f.centre.y);
+    if (clear > 1.5 * R) return f;  // well off the ground (the ground never tilts that far)
+    f.out = ground.normal(f.centre.x, f.centre.y);
+    double above = clear * f.out.z;
+    f.compression = R - above;
+    if (f.compression <= 0) return f;
+    f.touching = true;
+
+    Vec3 out_body = rotateBack(s.attitude, f.out);
+    f.arm = arm - out_body * R;
+    f.point = f.centre - f.out * R;
+
+    // How springy: the grass, with the tube bending under the part of the push that is across it
+    double across = 1 - std::pow(dot(in.leg_dir[i], out_body), 2);
+    f.stiffness = 1 / (1 / ground.stiffness(f.centre.x, f.centre.y) + across / in.tube_stiffness);
+
+    double s_now;
+    f.force = footForce(f.compression, in.foot_crush[i], R, cfg.foot_crush_stress, f.stiffness, s_now);
+    f.crushing = s_now > in.foot_crush[i];
+    return f;
+}
+
+// Anything but the feet touching the ground is a stiff, lossy spring. Only worth checking when we're low.
+static bool nearGround(const StepInputs& in, const RigidBodyState& s) {
+    return s.position.z - in.ground->height(s.position.x, s.position.y) < 1.0;
 }
 
 // How high the lowest part of the rocket is above the ground under it
-double lowestPoint(const Config& cfg, const Ground& ground, const MassProps& mp, const RigidBodyState& s,
-                   const LegTravel& travel) {
+double lowestPoint(const Config& cfg, const Ground& ground, const StepInputs& in, const RigidBodyState& s) {
+    (void)cfg;
+    if (s.position.z - ground.height(s.position.x, s.position.y) > 2.0) return s.position.z - ground.height(s.position.x, s.position.y) - 0.65;
+    // (nothing reaches the ground from up here, and the CG is at most 0.65 m from the lowest point)
     double lowest = 1e9;
-    for (Vec3 p : contactPoints(cfg, travel)) {
-        Vec3 point = s.position + rotate(s.attitude, {p.x - mp.cg, p.y, p.z});
-        lowest = std::min(lowest, point.z - ground.height(point.x, point.y));
+    for (int i = 0; i < 4; i++) {
+        Vec3 c = s.position + rotate(s.attitude, in.foot_centre[i] - in.body.cg);
+        lowest = std::min(lowest, (c.z - ground.height(c.x, c.y)) * ground.normal(c.x, c.y).z - in.foot_radius);
     }
+    if (in.body_points)
+        for (const Vec3& p : *in.body_points) {
+            Vec3 w = s.position + rotate(s.attitude, p - in.body.cg);
+            lowest = std::min(lowest, w.z - ground.height(w.x, w.y));
+        }
     return lowest;
 }
 
-// After each step: any leg pressed in harder than its crush force gives way and gets shorter
-void strokeLegs(const Config& cfg, const Ground& ground, const MassProps& mp, const RigidBodyState& s,
-                LegTravel& travel) {
-    auto points = contactPoints(cfg, travel);
+void crushFeet(const Config& cfg, const Ground& ground, const StepInputs& in, const RigidBodyState& s, FootCrush& crush) {
+    (void)ground;
+    StepInputs now = in;
+    now.foot_crush = crush;
     for (int i = 0; i < 4; i++) {
-        Vec3 point = s.position + rotate(s.attitude, {points[i].x - mp.cg, points[i].y, points[i].z});
-        double depth = (ground.height(point.x, point.y) - point.z) * ground.normal(point.x, point.y).z;
-        double too_far = depth - cfg.leg_crush_force / ground.stiffness(point.x, point.y);
-        if (too_far > 0) travel[i] = std::min(cfg.leg_stroke, travel[i] + too_far);
+        FootContact f = footContact(cfg, now, s, i);
+        if (!f.touching) continue;
+        double s_now;
+        footForce(f.compression, crush[i], in.foot_radius, cfg.foot_crush_stress, f.stiffness, s_now);
+        crush[i] = s_now;
     }
 }
 
-// Any point poking into the ground gets pushed back out by the grass and leg struts (a stiff,
-// lossy spring), straight out of the ground's surface, which tilts on slopes and bumps. A leg
-// can't push harder than its damper's crush force, since past that the damper strokes instead.
-// Friction fights sliding. That gives landings, skids and tipping over.
-static void groundForces(const Config& cfg, const StepInputs& in, const RigidBodyState& s,
-                         Vec3& force_world, Vec3& torque_body) {
-    const MassProps& mp = in.mass_props;
+// Pushes from the ground on everything that touches it. Each point gets pushed back out along the ground's
+// surface normal (which tilts on slopes and bumps), with a damper for the bounciness asked for. Friction fights
+// sliding. That gives landings, skids and tipping over. When foot_out is given, the foot forces are saved there.
+static void groundForces(const Config& cfg, const StepInputs& in, const RigidBodyState& s, Vec3& force_world,
+                         Vec3& torque_body, FootLoads* foot_out) {
+    const BodyProps& b = in.body;
     const Ground& ground = *in.ground;
 
     // How easily a point on the rocket moves when pushed in a (world) direction, counting the
     // rocket turning about its CG. Used to keep the ground forces from overshooting in one time step.
     auto give = [&](const Vec3& arm, Vec3 direction) {
         Vec3 turn = cross(arm, rotateBack(s.attitude, direction));
-        return 1 / mp.mass + turn.x * turn.x / mp.inertia_roll + (turn.y * turn.y + turn.z * turn.z) / mp.inertia_pitch;
+        return 1 / b.mass + dot(turn, b.inverse_inertia * turn);
     };
 
-    auto points = contactPoints(cfg, in.leg_travel);
-    for (int i = 0; i < 6; i++) {
-        Vec3 arm = {points[i].x - mp.cg, points[i].y, points[i].z};
-        Vec3 point = s.position + rotate(s.attitude, arm);
-        double below = ground.height(point.x, point.y) - point.z;
-        if (below <= 0) continue;
-
-        Vec3 out = ground.normal(point.x, point.y);
-        double depth = below * out.z;
+    // One contact: push is the springy force along the normal, before damping
+    auto apply = [&](const Vec3& arm, const Vec3& out, double push_in, double stiffness, double depth, int foot, bool crushing) {
         Vec3 v = s.velocity + rotate(s.attitude, cross(s.angular_velocity, arm));
         double sinking = dot(v, out);  // negative while going in
 
         // Pick the damping that gives the bounciness asked for, even if a single point takes the
         // whole rocket. With several points touching it's deader still, which suits grass.
-        double stiffness = ground.stiffness(point.x, point.y);
         double loss = -std::log(std::clamp(cfg.bounciness, 0.001, 0.999));
         double damping_ratio = loss / std::sqrt(PI * PI + loss * loss);
-        double damping = 2 * damping_ratio * std::sqrt(stiffness * mp.mass);
+        double damping = 2 * damping_ratio * std::sqrt(stiffness * b.mass);
 
         // The damper stops this point sinking in, but can't fling it back out, so it's capped at the
         // force that would just stop the point within one time step (keeps hard crashes stable)
         double most = 0.2 * std::fabs(sinking) / (give(arm, out) * cfg.physics_dt);
-        double damper = std::clamp(damping * sinking, -most, most);
-        double push = std::max(stiffness * depth - damper, 0.0);
-
-        bool is_foot = i < 4;
-        if (is_foot && in.leg_travel[i] < cfg.leg_stroke) push = std::min(push, cfg.leg_crush_force);
+        double damper = crushing ? 0.0 : std::clamp(damping * sinking, -most, most);
+        double push = std::max(push_in - damper, 0.0);
+        (void)depth;
 
         // Friction fights sliding. It can stop a sliding foot but never push it backwards, so it's
         // capped at the force that would just stop this point within one time step.
@@ -156,28 +219,57 @@ static void groundForces(const Config& cfg, const StepInputs& in, const RigidBod
             double friction = std::min(cfg.ground_friction * push, stopping_force);
             f = f - direction * friction;
         }
-
         force_world += f;
         torque_body += cross(arm, rotateBack(s.attitude, f));
+        if (foot_out && foot >= 0) foot_out->force[foot] += rotateBack(s.attitude, f);
+    };
+
+    for (int i = 0; i < 4; i++) {
+        FootContact f = footContact(cfg, in, s, i);
+        if (!f.touching) continue;
+        if (foot_out) {
+            foot_out->point[i] = in.foot_centre[i];
+            foot_out->compression[i] = f.compression;
+        }
+        apply(f.arm, f.out, f.force, f.stiffness, f.compression, i, f.crushing);
+        if (foot_out) foot_out->point[i] = f.arm + b.cg;
+    }
+
+    if (!in.body_points || !nearGround(in, s)) return;
+    for (const Vec3& p : *in.body_points) {
+        Vec3 arm = p - b.cg;
+        Vec3 point = s.position + rotate(s.attitude, arm);
+        double below = ground.height(point.x, point.y) - point.z;
+        if (below <= 0) continue;
+        Vec3 out = ground.normal(point.x, point.y);
+        double k = ground.stiffness(point.x, point.y);
+        apply(arm, out, k * below * out.z, k, below * out.z, -1, false);
     }
 }
 
+void footLoads(const Config& cfg, const StepInputs& in, const RigidBodyState& s, FootLoads& out) {
+    out = FootLoads{};
+    Vec3 force, torque;
+    // Only the feet matter here
+    StepInputs feet_only = in;
+    feet_only.body_points = nullptr;
+    if (in.ground_active) groundForces(cfg, feet_only, s, force, torque, &out);
+}
+
 static Derivative derivative(const Config& cfg, const StepInputs& in, const RigidBodyState& s) {
-    const MassProps& mp = in.mass_props;
+    const BodyProps& b = in.body;
     Vec3 force;   // body frame
     Vec3 torque;  // body frame, about the CG
 
     // Thrust pushes along the gimbal direction, through the gimbal pivot
-    Vec3 push = thrustDirection(in.gimbal_y, in.gimbal_z) * in.thrust + in.side_force;
-    Vec3 pivot_arm = Vec3{cfg.gimbal_position - mp.cg, 0, 0} - in.cg_shift;
+    Vec3 push = in.thrust_dir * in.thrust + in.side_force;
     force += push;
-    torque += cross(pivot_arm, push);
+    torque += cross(in.thrust_point - b.cg, push);
     torque.x += in.roll_torque;
     torque += in.extra_torque;
 
-    // Jet damping: exhaust leaving the nozzle (at the bottom of the rocket) carries some of the
-    // rocket's wobble away with it
-    double nozzle_arm = mp.cg;
+    // Jet damping: exhaust leaving the nozzle carries some of the rocket's wobble away with it
+    double nozzle_arm = b.cg.x - in.nozzle_x;
     torque.y -= in.mass_flow * nozzle_arm * nozzle_arm * s.angular_velocity.y;
     torque.z -= in.mass_flow * nozzle_arm * nozzle_arm * s.angular_velocity.z;
 
@@ -186,7 +278,7 @@ static Derivative derivative(const Config& cfg, const StepInputs& in, const Rigi
     bool tail_first = air_velocity.x < 0;
     double cd = tail_first ? cfg.cd_tail_first : cfg.cd_nose_first;
     double cp = tail_first ? cfg.cp_tail_first : cfg.cp_nose_first;
-    Vec3 cp_arm = {cp - mp.cg, 0, 0};
+    Vec3 cp_arm = Vec3{cp, 0, 0} - b.cg;
 
     // Spinning also swings the CP through the air. This is what damps out wobbles.
     Vec3 v = air_velocity + cross(s.angular_velocity, cp_arm);
@@ -203,7 +295,7 @@ static Derivative derivative(const Config& cfg, const StepInputs& in, const Rigi
 
     // Crossflow drag: when the rocket goes sideways through the air, the whole side of the tube
     // acts like a flat plate. Tiny at small angles, but it's what calms down a tumbling rocket.
-    Vec3 middle_arm = {cfg.body_length / 2 - mp.cg, 0, 0};
+    Vec3 middle_arm = Vec3{cfg.body_length / 2, 0, 0} - b.cg;
     Vec3 side = air_velocity + cross(s.angular_velocity, middle_arm);
     double side_speed = std::hypot(side.y, side.z);
     double side_k = 0.5 * airDensity(s.position.z) * cfg.cd_crossflow * cfg.body_length * cfg.body_diameter;
@@ -211,19 +303,20 @@ static Derivative derivative(const Config& cfg, const StepInputs& in, const Rigi
     force += crossflow;
     torque += cross(middle_arm, crossflow);
 
+    force += in.leg_force;
+    torque += in.leg_torque;
+
     Vec3 ground;  // world frame
-    if (in.legs_out) groundForces(cfg, in, s, ground, torque);
+    if (in.ground_active) groundForces(cfg, in, s, ground, torque, nullptr);
 
     Derivative d;
     d.velocity = s.velocity;
-    d.acceleration = (rotate(s.attitude, force) + ground) / mp.mass + Vec3{0, 0, -GRAVITY};
+    d.acceleration = (rotate(s.attitude, force) + ground) / b.mass + Vec3{0, 0, -GRAVITY};
 
-    // Euler's rotation equations
+    // Euler's rotation equations, with the full inertia tensor (the CAD rocket isn't perfectly symmetric)
     Vec3 w = s.angular_velocity;
-    Vec3 inertia = {mp.inertia_roll, mp.inertia_pitch, mp.inertia_pitch};
-    Vec3 momentum = {inertia.x * w.x, inertia.y * w.y, inertia.z * w.z};
-    Vec3 net = torque - cross(w, momentum);
-    d.angular_acceleration = {net.x / inertia.x, net.y / inertia.y, net.z / inertia.z};
+    Vec3 net = torque - cross(w, b.inertia * w);
+    d.angular_acceleration = b.inverse_inertia * net;
 
     Quat q = s.attitude * Quat{0, w.x, w.y, w.z};
     d.attitude_rate = {0.5 * q.w, 0.5 * q.x, 0.5 * q.y, 0.5 * q.z};

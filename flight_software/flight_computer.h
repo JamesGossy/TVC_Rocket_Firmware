@@ -19,11 +19,18 @@ struct SensorData {
 
 // What the flight computer tells the hardware to do
 struct Commands {
-    double gimbal_y = 0;  // radians
-    double gimbal_z = 0;
-    double throttle = 1;  // landing motor paddles, 1 = wide open
+    double gimbal_y = 0;  // the gimbal tilt the steering wants, radians (pitch about the body y axis)
+    double gimbal_z = 0;  // (yaw about the body z axis)
+    double throttle = 1;  // share of the landing motor's thrust wanted, 1 = blockers wide open
     bool fire_ascent = false;
     bool fire_landing = false;
+    bool release_legs = false;  // let the leg keeper go (stays true once sent)
+
+    // What actually goes to the five KST X08H Plus servos: horn angles in degrees
+    double tvc_yaw_servo_deg = 0;
+    double tvc_pitch_servo_deg = 0;
+    double blocker_servo_deg = -80;  // both blocker claws
+    double keeper_servo_deg = 0;
 };
 
 enum class FlightState { Pad, Boost, Coast, LandingBurn };
@@ -50,6 +57,9 @@ private:
     bool timeToLight(const SensorData& data) const;
     double landingThrottle(const SensorData& data) const;
     void changeState(FlightState next, double time);
+    void massNumbers();
+    void servoCommands(Commands& cmd) const;
+    void releaseLegs();
 
     Config cfg;
     ThrustCurve curve;
@@ -77,4 +87,5 @@ private:
     double average_thrust = 0;
 
     double landing_lit_at = -1;  // when we expect the landing motor to light
+    bool legs_released = false;  // we sent the leg release, so the legs are (about to be) out
 };

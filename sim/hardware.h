@@ -8,7 +8,7 @@
 #include "physics.h"
 #include "thrust_curve.h"
 
-// Simple models of the real hardware: motors, servos, paddles, sensors and wind.
+// Simple models of the real hardware: motors, sensors and wind. (The servos and linkages are in mechanism.cpp.)
 
 // One real motor. Knows when it was lit and how much propellant is left.
 struct Motor {
@@ -21,67 +21,17 @@ struct Motor {
         return thrust_scale * curve->thrust(t - ignition_time);
     }
 
+    // Share of the propellant burned so far, 0 to 1
+    double burned(double t) const {
+        if (ignition_time < 0 || t <= ignition_time) return 0;
+        return curve->impulseUpTo(t - ignition_time) / curve->totalImpulse();
+    }
+
     double mass(double t) const {
         double burned = 0;
         if (ignition_time >= 0 && t > ignition_time)
             burned = curve->impulseUpTo(t - ignition_time) / curve->totalImpulse();
         return curve->totalMass() - curve->propellantMass() * burned;
-    }
-};
-
-// A hobby servo moving one gimbal axis through a linkage. Real servos only take a new
-// position every 20 ms, ignore tiny changes, respond with a little lag, swing at a limited
-// speed, the linkage has slop in it, and the printed mount is springy so the gimbal rings.
-// So the gimbal never goes exactly where it's told.
-struct Servo {
-    double angle = 0;       // where the gimbal actually is
-    double angle_rate = 0;
-    double accel = 0;       // gimbal's angular acceleration (it twists the rocket the other way)
-    double arm = 0;         // where the servo arm is
-    double linkage = 0;     // where the linkage is pushing the gimbal, after the slop
-    double goal = 0;        // last position the servo accepted
-    double next_update = 0;
-
-    void update(double target, double t, double dt, const Config& cfg) {
-        if (t >= next_update) {
-            next_update = t + 1.0 / cfg.servo_update_rate;
-            target = std::clamp(target, -cfg.gimbal_max_deg * DEG, cfg.gimbal_max_deg * DEG);
-            if (std::fabs(target - goal) > cfg.servo_deadband_deg * DEG) goal = target;
-        }
-
-        // The arm heads for the goal with a short lag, but no faster than the servo's top speed
-        double max_speed = cfg.servo_rate_deg * DEG;
-        arm += std::clamp((goal - arm) / std::max(cfg.servo_lag, dt), -max_speed, max_speed) * dt;
-
-        // Backlash: the linkage only moves once the arm has taken up the slop
-        double slop = cfg.gimbal_backlash_deg * DEG / 2;
-        if (arm - linkage > slop) linkage = arm - slop;
-        if (linkage - arm > slop) linkage = arm + slop;
-
-        // The mount and linkage are springy, so the gimbal rings around where it's pushed
-        if (cfg.gimbal_wobble_hz <= 0) {  // perfectly stiff
-            double new_rate = (linkage - angle) / dt;
-            accel = (new_rate - angle_rate) / dt;
-            angle_rate = new_rate;
-            angle = linkage;
-            return;
-        }
-        double w = 2 * PI * cfg.gimbal_wobble_hz;
-        accel = w * w * (linkage - angle) - 2 * cfg.gimbal_wobble_damping * w * angle_rate;
-        angle_rate += accel * dt;
-        angle += angle_rate * dt;
-    }
-};
-
-// Paddles in the landing motor's exhaust. 1.0 = full thrust.
-// They can't choke it below throttle_min, and their servo can only move them so fast.
-struct Paddles {
-    double throttle = 1.0;
-
-    void update(double target, const Config& cfg, double dt) {
-        target = std::clamp(target, cfg.throttle_min, 1.0);
-        double max_step = cfg.throttle_rate * dt;
-        throttle += std::clamp(target - throttle, -max_step, max_step);
     }
 };
 

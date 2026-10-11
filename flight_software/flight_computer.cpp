@@ -1,4 +1,6 @@
 #include "flight_computer.h"
+#include "blocker_keeper_map.h"
+#include "tvc_command_map.h"
 #include "vehicle.h"
 
 const char* stateName(FlightState state) {
@@ -36,6 +38,8 @@ Commands FlightComputer::update(const SensorData& data) {
             break;
 
         case FlightState::Coast:
+            // Past the top and starting to fall: let the legs go while the air is still slow enough for their springs
+            if (velocity.z < -cfg.leg_release_speed) releaseLegs();
             if (cfg.landing_motor && timeToLight(data)) {
                 cmd.fire_landing = true;
                 landing_lit_at = data.time + cfg.landing_ignition_delay;
@@ -44,6 +48,7 @@ Commands FlightComputer::update(const SensorData& data) {
             break;
 
         case FlightState::LandingBurn:
+            releaseLegs();  // in case the coast was too short to do it
             // Fly toward the pad up high, but arrive with no sideways speed
             steer(data, padDirection(data, cfg.pad_return * std::clamp(altitude / cfg.pad_return_height, 0.0, 1.0),
                                      cfg.max_lean_deg), cmd);
@@ -53,7 +58,28 @@ Commands FlightComputer::update(const SensorData& data) {
         default:
             break;
     }
+    servoCommands(cmd);
     return cmd;
+}
+
+void FlightComputer::releaseLegs() {
+    if (legs_released) return;
+    legs_released = true;
+    massNumbers();
+}
+
+// Turn the wanted gimbal tilt and throttle into servo horn angles with the CAD maps
+void FlightComputer::servoCommands(Commands& cmd) const {
+    float yaw_servo = 0, pitch_servo = 0;
+    tvc_command((float)(cmd.gimbal_z / DEG), (float)(cmd.gimbal_y / DEG), &yaw_servo, &pitch_servo);
+    cmd.tvc_yaw_servo_deg = yaw_servo;
+    cmd.tvc_pitch_servo_deg = pitch_servo;
+
+    // Full close blocks 1 - throttle_min of the thrust, so the share of full close is the wanted loss over that
+    double share = std::clamp((1 - cmd.throttle) / (1 - cfg.throttle_min), 0.0, 1.0);
+    cmd.blocker_servo_deg = blocker_servo_for_share((float)share);
+    cmd.release_legs = legs_released;
+    cmd.keeper_servo_deg = legs_released ? KEEPER_RELEASE_DEG : KEEPER_HOLD_DEG;
 }
 
 // Sit still and average the sensors. That gives the gyro bias, which way is up, and the
@@ -75,12 +101,16 @@ void FlightComputer::calibrateOnPad(const SensorData& data, Commands& cmd) {
 void FlightComputer::changeState(FlightState next, double time) {
     state = next;
     state_start = time;
+    massNumbers();
+}
 
-    // Rough mass numbers, pretending the burning motor is half used up. The spent ascent motor
-    // gets kicked out when the landing motor lights.
+// Rough mass numbers, pretending the burning motor is half used up. The spent ascent motor
+// gets kicked out when the landing motor lights. The legs weigh in differently once they are out.
+void FlightComputer::massNumbers() {
     double full = curve.totalMass();
     double half = full - curve.propellantMass() / 2;
-    MassProps p = (next == FlightState::Boost) ? massProperties(cfg, half, full) : massProperties(cfg, 0, half);
+    MassProps p = (state == FlightState::Boost) ? massProperties(cfg, half, full, legs_released)
+                                                : massProperties(cfg, 0, half, legs_released);
     mass = p.mass;
     inertia = p.inertia_pitch;
     lever_arm = p.cg - cfg.gimbal_position;
