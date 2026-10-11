@@ -68,7 +68,8 @@ def blocker_chain(J, side):
 def claw_angle(ch, q_deg):
     """Claw angle (deg, Fusion sign) for a servo angle: the link keeps its length. Branch that starts at 0 (closed)."""
     cs = np.arange(-70.0, 5.0, 0.01)
-    Hp = ch["S"] + bv.rot(ch["aS"], q_deg * DEG) @ (ch["H0"] - ch["S"])
+    # the exported horn pin H0 is where it sits at the neutral servo angle (-0.5 deg), so turn it by the difference
+    Hp = ch["S"] + bv.rot(ch["aS"], (q_deg - ch["servo_neutral_deg"]) * DEG) @ (ch["H0"] - ch["S"])
     best = None
     for c in cs:
         Tp = ch["Cp"] + bv.rot(ch["aC"], c * DEG) @ (ch["T0"] - ch["Cp"])
