@@ -40,6 +40,7 @@ struct Config {
     bool tvc_enabled;
     double control_rate, launch_time, kp, kd, estimator_gain, gps_velocity_gain;
     double landing_brake, touchdown_speed, max_fire_tilt_deg, drift_kill_time, max_lean_deg;
+    double pad_return, pad_return_height, boost_max_lean_deg;
 
     // Launch day
     double launch_tilt_deg, wind_speed, wind_direction_deg, gust_strength, wind_height, wind_shear;

@@ -40,12 +40,13 @@ public:
     Quat attitude;
     double altitude = 0;  // above the pad
     Vec3 velocity;        // m/s (east, north, up)
+    Vec3 position;        // m east and north of the pad, from adding up the velocity
 
 private:
     void calibrateOnPad(const SensorData& data, Commands& cmd);
     void estimate(const SensorData& data, double dt);
     void steer(const SensorData& data, Vec3 target, Commands& cmd) const;
-    Vec3 landingDirection(const SensorData& data) const;
+    Vec3 padDirection(const SensorData& data, double return_gain, double max_lean_deg) const;
     bool timeToLight(const SensorData& data) const;
     double landingThrottle(const SensorData& data) const;
     void changeState(FlightState next, double time);

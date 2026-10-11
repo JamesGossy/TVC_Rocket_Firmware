@@ -9,8 +9,8 @@ lands it, steering with a gimbaled motor mount and paddles that throttle the lan
 **[Watch it fly in your browser](https://jamesgossy.github.io/TVC_Rocket_Firmware/)**: the normal
 flight plus 20 random ones with different wind, motors and igniters.
 
-**95% good landings** over 2000 random flights, with realistic servos, sensors, wind and ground.
-98% in wind under 2 m/s.
+**92% good landings** over 2000 random flights, with realistic servos, sensors, wind and ground,
+landing a median of 6 m from the pad (no RTK GPS).
 
 ## How it lands
 
@@ -18,16 +18,17 @@ The flight software is about 175 lines (`flight_software/flight_computer.cpp`) a
 from the physics so it can run on the real flight computer.
 
 1. **Pad:** average the sensors for two seconds to learn the gyro bias and which way is up.
-2. **Boost:** PD control on the gimbal keeps the nose straight up.
+2. **Boost:** PD control on the gimbal keeps the nose up, leaning at most 4° to head back over
+   the pad.
 3. **Coast:** light the landing motor once braking at 3.5 m/s² would just stop it at the ground,
    looking ahead by the igniter delay. If it'll be tipped way over, wait a moment for the tumble
    to swing back.
 4. **Landing burn:** the paddles follow a braking curve (falling too fast, open them, too slow,
-   close them), and the gimbal leans against any sideways drift so the legs don't touch down
-   sliding.
+   close them), and the gimbal leans to fly back toward the pad, easing off near the ground so
+   the legs don't touch down sliding.
 
-Attitude comes from the gyro, altitude from the accelerometer and barometer, and velocity from
-the accelerometer corrected by GPS. Everything that didn't measurably help got cut.
+Attitude comes from the gyro, altitude from the accelerometer and barometer, velocity from
+the accelerometer corrected by GPS, and position from adding up the velocity. Everything that didn't measurably help got cut.
 
 ## The rocket
 
@@ -75,6 +76,9 @@ validation/        comparison against RocketPy
 
 - **No fins means it tumbles between the two burns,** and wind makes it worse. Most failures left
   are flights the wind flipped nearly upside down before the landing motor lit.
+- **Landing close to the pad costs landings.** Holding over the pad in wind means flying at an
+  angle to the air, and without fins that makes the coast tumble worse. Steering back in the
+  landing burn is free (13.7 m to 10.2 m at 96%); the 4° boost lean gets it to about 6 m for a few percent.
 - **Paddles are what make it work.** Without them the landing is at the mercy of the igniter
   timing (about ±180 ms), and the best I got was 42%.
 - **Wide legs beat strong legs.** Touchdowns are gentle (about 2 m/s); tipping over is what kills

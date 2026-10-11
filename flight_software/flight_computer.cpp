@@ -28,7 +28,9 @@ Commands FlightComputer::update(const SensorData& data) {
 
     switch (state) {
         case FlightState::Boost:
-            steer(data, {0, 0, 1}, cmd);
+            // Only a small lean: holding over the pad in wind means flying at an angle to the air,
+            // which makes the coast tumble worse
+            steer(data, padDirection(data, cfg.pad_return, cfg.boost_max_lean_deg), cmd);
             // Burnout: the push along the nose drops off
             if (data.time - state_start > 1.0 && data.accel.x < 5.0) changeState(FlightState::Coast, data.time);
             break;
@@ -42,7 +44,9 @@ Commands FlightComputer::update(const SensorData& data) {
             break;
 
         case FlightState::LandingBurn:
-            steer(data, landingDirection(data), cmd);
+            // Fly toward the pad up high, but arrive with no sideways speed
+            steer(data, padDirection(data, cfg.pad_return * std::clamp(altitude / cfg.pad_return_height, 0.0, 1.0),
+                                     cfg.max_lean_deg), cmd);
             cmd.throttle = landingThrottle(data);
             break;
 
@@ -95,6 +99,7 @@ void FlightComputer::estimate(const SensorData& data, double dt) {
     double error = data.baro_altitude - ground_altitude - altitude;
     altitude += (velocity.z + 2 * w * error) * dt;
     velocity.z += w * w * error * dt;
+    position += Vec3{velocity.x, velocity.y, 0} * dt;
 
     // GPS velocity is good but arrives gps_latency late. Compare each fix with what we thought
     // back then, and nudge today's estimate by part of the difference.
@@ -126,12 +131,13 @@ void FlightComputer::steer(const SensorData& data, Vec3 target, Commands& cmd) c
     cmd.gimbal_z = -want.z * inertia / torque_per_radian;
 }
 
-// Which way to point in the landing burn: lean against any sideways drift, so we aren't sliding
-// when the legs touch
-Vec3 FlightComputer::landingDirection(const SensorData& data) const {
+// Which way to point while a motor burns: head back toward the pad (return_gain m/s per meter
+// away), leaning to reach that sideways speed within drift_kill_time
+Vec3 FlightComputer::padDirection(const SensorData& data, double return_gain, double max_lean_deg) const {
     double push = std::max(data.accel.x, 1.0);  // what the motor gives us right now, m/s^2
-    Vec3 side = Vec3{velocity.x, velocity.y, 0} * (-1 / cfg.drift_kill_time);
-    double most = push * std::sin(cfg.max_lean_deg * DEG);
+    Vec3 want = Vec3{-position.x, -position.y, 0} * return_gain;
+    Vec3 side = (want - Vec3{velocity.x, velocity.y, 0}) * (1 / cfg.drift_kill_time);
+    double most = push * std::sin(max_lean_deg * DEG);
     if (length(side) > most) side = normalize(side) * most;
     return normalize(Vec3{side.x, side.y, std::sqrt(push * push - dot(side, side))});
 }

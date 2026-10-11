@@ -65,7 +65,8 @@ Config loadConfig(const std::string& path) {
 
     READ(tvc_enabled); READ(control_rate); READ(launch_time); READ(kp); READ(kd); READ(estimator_gain);
     READ(gps_velocity_gain); READ(landing_brake); READ(touchdown_speed); READ(max_fire_tilt_deg);
-    READ(drift_kill_time); READ(max_lean_deg);
+    READ(drift_kill_time); READ(max_lean_deg); READ(pad_return);
+    READ(pad_return_height); READ(boost_max_lean_deg);
 
     READ(launch_tilt_deg); READ(wind_speed); READ(wind_direction_deg); READ(gust_strength); READ(wind_height); READ(wind_shear);
 
