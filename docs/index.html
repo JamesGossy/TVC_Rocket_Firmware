@@ -84,6 +84,7 @@
       <option value="follow">Follow rocket</option>
       <option value="aft">Aft close-up (rides the rocket)</option>
       <option value="pad">From the pad</option>
+      <option value="ground">Ground level (feet)</option>
       <option value="free">Free</option>
     </select>
   </label>
@@ -613,9 +614,10 @@ function setCamera(mode) {
   controls.enabled = mode !== 'aft';
   if (mode === 'follow') camera.position.copy(rocketPosition).add(new THREE.Vector3(1.6, 0.4, 1.6));
   if (mode === 'pad') camera.position.set(8, 1.2, 8);
+  if (mode === 'ground') camera.position.set(rocketPosition.x + 0.7, 0.12, rocketPosition.z + 0.7);
   if (mode === 'free') camera.position.set(25, 15, 25);
   if (mode !== 'aft') camera.up.set(0, 1, 0);
-  controls.target.copy(mode === 'free' ? new THREE.Vector3(0, 15, 0) : rocketPosition);
+  controls.target.copy(mode === 'free' ? new THREE.Vector3(0, 15, 0) : mode === 'ground' ? new THREE.Vector3(rocketPosition.x, Math.max(0.08, rocketPosition.y - 0.2), rocketPosition.z) : rocketPosition);
   lastRocketPosition.copy(rocketPosition);
 }
 
@@ -646,6 +648,13 @@ function moveCamera() {
     controls.target.copy(rocketPosition);
   }
   if (mode === 'pad') controls.target.copy(rocketPosition);
+  if (mode === 'ground') {
+    // Low and close, following the rocket sideways, looking at the feet
+    camera.position.x += rocketPosition.x - lastRocketPosition.x;
+    camera.position.z += rocketPosition.z - lastRocketPosition.z;
+    camera.position.y = Math.max(0.1, camera.position.y);
+    controls.target.set(rocketPosition.x, Math.max(0.08, rocketPosition.y - 0.2), rocketPosition.z);
+  }
   if (mode === 'aft') aftCamera(parseFloat($('size').value));
   lastRocketPosition.copy(rocketPosition);
 
