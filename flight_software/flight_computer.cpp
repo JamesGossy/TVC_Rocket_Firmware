@@ -144,7 +144,7 @@ void FlightComputer::estimate(const SensorData& data, double dt) {
 }
 
 // Point the nose at target (a world direction) with PD control on the gimbal
-void FlightComputer::steer(const SensorData& data, Vec3 target, Commands& cmd) const {
+void FlightComputer::steer(const SensorData& data, Vec3 target, Commands& cmd) {
     if (!cfg.tvc_enabled || data.accel.x < 2.0) return;  // no motor burning, nothing to steer with
 
     // How far, and around which axis, the nose has to turn to reach the target. Using the real
@@ -153,6 +153,17 @@ void FlightComputer::steer(const SensorData& data, Vec3 target, Commands& cmd) c
     double angle = std::acos(std::clamp(to.x, -1.0, 1.0));
     Vec3 error = normalize(cross({1, 0, 0}, to)) * angle;
     Vec3 rate = data.gyro - gyro_bias;
+    // Low-pass the rate so the derivative term does not drive the gimbal's own flex mode (restarts after any gap in steering)
+    if (cfg.rate_filter_hz > 0) {
+        double dt = data.time - rate_filter_time;
+        if (rate_filter_time < 0 || dt > 0.05) rate_filtered = rate;
+        else {
+            double tau = 1.0 / (2 * PI * cfg.rate_filter_hz);
+            rate_filtered += (rate - rate_filtered) * (dt / (tau + dt));
+        }
+        rate_filter_time = data.time;
+        rate = rate_filtered;
+    }
 
     // The angular acceleration we want, then the gimbal angle that gives it
     Vec3 want = error * cfg.kp - rate * cfg.kd;
@@ -181,7 +192,22 @@ bool FlightComputer::timeToLight(const SensorData& data) const {
     double height = altitude + velocity.z * delay - 0.5 * GRAVITY * delay * delay;
     double speed = -velocity.z + GRAVITY * delay;
     double braking_needed = speed * speed / (2 * std::max(height, 0.1));
-    if (braking_needed < cfg.landing_brake) return false;
+    if (cfg.predict_ignition > 0.5) {
+        // Fly the planned burn forward with the real thrust curve (predict_share of full thrust) and light as late as
+        // possible while we still arrive at predict_speed or slower. braking_needed stays for the urgent test below.
+        double up = 1.0;  // thrust assumed straight up; the steering keeps the lean small in the burn
+        double h = height, v = -speed, t = 0, dt = 0.01;
+        double bt = curve.burnTime();
+        while (h > 0 && t < bt + 2.0) {
+            double thr = cfg.predict_share;
+            double full = curve.thrust(t);
+            double a = thr * full * up / std::max(mass, 0.1) - GRAVITY;
+            v += a * dt; h += v * dt; t += dt;
+            if (v > 0 && h > 0 && t > bt) break;  // dry and still up: overshoot, no problem
+        }
+        double arrive = (h <= 0) ? -v : 0;
+        if (arrive < cfg.predict_speed) return false;
+    } else if (braking_needed < cfg.landing_brake) return false;
 
     // If the nose will be tipped way over by then, wait for the tumble to swing back, unless
     // waiting would need much harder braking than planned

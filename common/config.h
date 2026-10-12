@@ -18,6 +18,9 @@ struct Config {
     // Aerodynamics
     double cd_nose_first, cd_tail_first, cn_alpha, cd_crossflow, cp_nose_first, cp_tail_first;
     double cd_leg, cd_foot;
+    // Strip aerodynamics (aero_model = 1): slender-body nose lift + Allen-Perkins crossflow on the body, see tools/aero_strip.py
+    double aero_model, aero_eta, aero_body_start, aero_low_radius, aero_nose_base, aero_tail_potential, aero_strips;
+    double aero_finA_area, aero_finA_x, aero_finA_cross, aero_finB_area, aero_finB_x, aero_finB_cross;
 
     // Motors: the landing motor sits above the ascent motor and kicks it out when it lights
     std::string motor_file;
@@ -61,7 +64,8 @@ struct Config {
 
     // Flight computer
     bool tvc_enabled;
-    double control_rate, launch_time, kp, kd, estimator_gain, gps_velocity_gain;
+    double control_rate, launch_time, kp, kd, rate_filter_hz, estimator_gain, gps_velocity_gain;
+    double predict_ignition, predict_share, predict_speed;
     double landing_brake, touchdown_speed, max_fire_tilt_deg, drift_kill_time, max_lean_deg;
     double pad_return, pad_return_height, boost_max_lean_deg;
     double leg_release_speed;
@@ -80,7 +84,7 @@ struct Config {
     // Monte Carlo spreads
     double mc_dry_mass_percent, mc_dry_cg, mc_thrust_percent, mc_ignition_delay, mc_misalignment_deg;
     double mc_launch_tilt_deg, mc_max_wind, mc_blocker_effect, mc_baro_airspeed, mc_max_slope_deg;
-    double mc_backlash_spread, mc_servo_offset_deg, mc_leg_spring_percent, mc_foot_crush_percent;
+    double mc_backlash_spread, mc_servo_offset_deg, mc_leg_spring_percent, mc_foot_crush_percent, mc_plunger_limit_percent;
 };
 
 Config loadConfig(const std::string& path);

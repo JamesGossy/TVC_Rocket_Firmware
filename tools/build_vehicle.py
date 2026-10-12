@@ -298,11 +298,13 @@ def load_placeholders():
 # ---------------------------------------------------------------------------------------------------------------
 # 5. Self-check against the numbers computed from the Fusion model by hand (no reaction wheel)
 # ---------------------------------------------------------------------------------------------------------------
-EXPECTED = {  # state: (mass kg, CG above the ascent motor's aft end m, Ixx, Iyy, Izz)  from the handoff table
-    "A liftoff, legs stowed": (0.9403, 0.2266, 0.02017, 0.02019, 0.00098),
-    "B landing motor loaded, stowed": (0.8463, 0.2455, 0.01706, 0.01708, 0.00097),
-    "B loaded, legs deployed": (0.8463, 0.2224, 0.02082, 0.02084, 0.00410),
-    "C landing burnout, deployed": (0.7853, 0.2251, 0.02068, 0.02070, 0.00410),
+EXPECTED = {  # state: (mass kg, CG above the ascent motor's aft end m, Ixx, Iyy, Izz)
+    # Re-baselined after Fusion v17 (v16 leg lock A2 sleeves + thread pads; v17 lock arm 22 -> 33 mm: boss/ramp, lobes, +3.7 g, roll inertia +4 %).
+    # The original hand-computed handoff table was: A (0.9403, 0.2266, 0.02017, 0.02019, 0.00098), B (0.8463, ...).
+    "A liftoff, legs stowed": (0.94668, 0.22586, 0.020279, 0.0203, 0.0010309),
+    "B landing motor loaded, stowed": (0.85268, 0.24448, 0.017196, 0.017218, 0.0010209),
+    "B loaded, legs deployed": (0.85268, 0.22157, 0.020934, 0.020956, 0.0041546),
+    "C landing burnout, deployed": (0.79168, 0.22417, 0.020797, 0.020818, 0.0041516),
 }
 
 

@@ -36,6 +36,16 @@ struct FlightResult {
     bool plunger_failed = false;   // a plunger hole or pin gave way (the leg folds)
     double peak_plunger_load = 0;  // N, worst of the four
     double gimbal_stop_time = 0;   // seconds the gimbal sat on its hard stop
+
+    // Ascent attitude (tilt = angle of the nose from vertical, true state)
+    double burnout_time = -1;         // when the flight computer saw the push along the nose drop (Boost -> Coast)
+    double burnout_tilt_deg = 0;
+    double burnout_rate_dps = 0;      // pitch/yaw rate then, deg/s
+    double boost_peak_tilt_deg = 0;   // worst tilt while the flight computer was in Boost
+    double boost_mean_tilt_deg = 0;
+    double boost_sat_time = 0;        // seconds the steering asked for 8 deg or more during Boost
+    double coast_peak_tilt_deg = 0;   // worst tilt between burnout and apogee
+    double apogee_tilt_deg = 0;       // tilt when the rocket starts to fall
 };
 
 // Fly the rocket once.

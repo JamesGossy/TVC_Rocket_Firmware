@@ -167,6 +167,8 @@ FlightResult runFlight(const Config& truth, const Config& nominal, const Vehicle
     Vec3 acceleration;  // from the last physics step, the accelerometer and the leg loads need it
     Vec3 angular_acceleration;
     double tube_k = tubeStiffness(truth, vehicle);
+    double boost_tilt_sum = 0;
+    long boost_steps = 0;
 
     for (long step = 0; step * dt < end_time; step++) {
         double t = step * dt;
@@ -274,8 +276,29 @@ FlightResult runFlight(const Config& truth, const Config& nominal, const Vehicle
         angular_acceleration = (state.angular_velocity - old_rate) / dt;
         if (mech.tvc_at_stop) result.gimbal_stop_time += dt;
 
+        // Ascent attitude bookkeeping (log only, nothing here feeds back)
+        if (!falling) {
+            double tilt_now = tiltDegrees(state.attitude);
+            if (computer.state == FlightState::Boost) {
+                result.boost_peak_tilt_deg = std::max(result.boost_peak_tilt_deg, tilt_now);
+                boost_tilt_sum += tilt_now;
+                boost_steps++;
+                if (std::hypot(cmd.gimbal_y, cmd.gimbal_z) >= 7.9 * DEG) result.boost_sat_time += dt;
+            } else if (computer.state == FlightState::Coast) {
+                if (result.burnout_time < 0) {
+                    result.burnout_time = t;
+                    result.burnout_tilt_deg = tilt_now;
+                    result.burnout_rate_dps = std::hypot(state.angular_velocity.y, state.angular_velocity.z) / DEG;
+                }
+                result.coast_peak_tilt_deg = std::max(result.coast_peak_tilt_deg, tilt_now);
+            }
+        }
+
         result.apogee = std::max(result.apogee, state.position.z - start_cg);
-        if (state.velocity.z < 0 && result.apogee > 1.0) falling = true;
+        if (state.velocity.z < 0 && result.apogee > 1.0) {
+            if (!falling) result.apogee_tilt_deg = tiltDegrees(state.attitude);
+            falling = true;
+        }
         if (!falling) continue;
 
         footLoads(truth, in, state, loads);  // with the crush from before this step, the same forces the step used
@@ -314,6 +337,7 @@ FlightResult runFlight(const Config& truth, const Config& nominal, const Vehicle
         result.peak_plunger_load = std::max(result.peak_plunger_load, mech.leg[i].peak_plunger_load);
         result.legs_out_time = std::max(result.legs_out_time, mech.leg[i].deploy_time);
     }
+    result.boost_mean_tilt_deg = boost_steps ? boost_tilt_sum / boost_steps : 0;
     result.final_tilt_deg = tiltDegrees(state.attitude);
     result.tipped_over = result.final_tilt_deg > 45;
     return result;

@@ -277,6 +277,66 @@ static Derivative derivative(const Config& cfg, const StepInputs& in, const Rigi
     Vec3 air_velocity = rotateBack(s.attitude, s.velocity - in.wind);
     bool tail_first = air_velocity.x < 0;
     double cd = tail_first ? cfg.cd_tail_first : cfg.cd_nose_first;
+    if (cfg.aero_model >= 0.5) {
+        // Strip model. Axial drag as before; the sideways force comes from adding up strips along the body:
+        //  - slender-body (Munk) force on the nose, rho * u * v_n * dS, which is what makes a nose lift going forward
+        //    and (kept at aero_tail_potential) pushes the wrong way going tail-first
+        //  - Allen-Perkins crossflow drag, eta * cd_crossflow * width * |v_n| * v_n, on every strip
+        // Every strip sees its own sideways speed (the rocket's turning is included), so damping comes out by itself.
+        double rho_air = airDensity(s.position.z);
+        double area0 = PI * cfg.body_diameter * cfg.body_diameter / 4;
+        Vec3 w = s.angular_velocity;
+        Vec3 drag = {-0.5 * rho_air * area0 * cd * std::fabs(air_velocity.x) * air_velocity.x, 0, 0};
+        force += drag;
+        int n = (int)cfg.aero_strips;
+        double dx = cfg.body_length / n;
+        double Rb = cfg.body_diameter / 2, Ln = cfg.body_length - cfg.aero_nose_base;
+        double rho_og = (Rb * Rb + Ln * Ln) / (2 * Rb);
+        auto radius = [&](double x) {
+            if (x > cfg.aero_nose_base) {
+                double xt = cfg.body_length - x;
+                return std::max(0.0, std::sqrt(std::max(rho_og * rho_og - (Ln - xt) * (Ln - xt), 0.0)) + Rb - rho_og);
+            }
+            return x < cfg.aero_body_start ? cfg.aero_low_radius : Rb;
+        };
+        double kvis = 0.5 * rho_air * cfg.aero_eta * cfg.cd_crossflow;
+        Vec3 F_side, M_side;
+        for (int i = 0; i < n; i++) {
+            double x = (i + 0.5) * dx;
+            double r0 = radius(x - dx / 2), r1 = radius(x + dx / 2), r = radius(x);
+            double px = x - b.cg.x;
+            double vny = air_velocity.y + w.z * px, vnz = air_velocity.z - w.y * px;
+            double vnm = std::hypot(vny, vnz);
+            double fy = -kvis * 2 * r * dx * vnm * vny, fz = -kvis * 2 * r * dx * vnm * vnz;
+            if (x > cfg.aero_nose_base) {
+                double dS = PI * (r1 * r1 - r0 * r0);  // negative toward the tip
+                double kp = tail_first ? cfg.aero_tail_potential : 1.0;
+                fy += rho_air * air_velocity.x * vny * dS * kp;
+                fz += rho_air * air_velocity.x * vnz * dS * kp;
+            }
+            F_side += Vec3{0, fy, fz};
+            M_side += Vec3{0, -fz * px, fy * px};   // (px,0,0) x (0,fy,fz)
+        }
+        // Optional fin / flare sets (A aft, B forward). A fin set gives a lift-type sideways force 0.5 rho A_n |u| v_n
+        // (A_n = CN_alpha * S_ref, stalls at about 14 deg) plus a crossflow term on its planform; it opposes the sideways
+        // speed whichever way the air flows, so an aft set steadies nose-first flight and upsets tail-first flight.
+        const double fin_set[2][3] = {{cfg.aero_finA_area, cfg.aero_finA_x, cfg.aero_finA_cross},
+                                      {cfg.aero_finB_area, cfg.aero_finB_x, cfg.aero_finB_cross}};
+        for (int k = 0; k < 2; k++) {
+            if (fin_set[k][0] <= 0 && fin_set[k][2] <= 0) continue;
+            double px = fin_set[k][1] - b.cg.x;
+            double vny = air_velocity.y + w.z * px, vnz = air_velocity.z - w.y * px;
+            double vnm = std::hypot(vny, vnz);
+            double ueff = std::min(std::fabs(air_velocity.x), 4.0 * vnm);
+            double kf = 0.5 * rho_air * fin_set[k][0] * ueff;
+            double kc = 0.5 * rho_air * 1.2 * fin_set[k][2] * vnm;
+            double fy = -(kf + kc) * vny, fz = -(kf + kc) * vnz;
+            F_side += Vec3{0, fy, fz};
+            M_side += Vec3{0, -fz * px, fy * px};
+        }
+        force += F_side;
+        torque += M_side;
+    } else {
     double cp = tail_first ? cfg.cp_tail_first : cfg.cp_nose_first;
     Vec3 cp_arm = Vec3{cp, 0, 0} - b.cg;
 
@@ -302,6 +362,7 @@ static Derivative derivative(const Config& cfg, const StepInputs& in, const Rigi
     Vec3 crossflow = {0, -side_k * side_speed * side.y, -side_k * side_speed * side.z};
     force += crossflow;
     torque += cross(middle_arm, crossflow);
+    }
 
     force += in.leg_force;
     torque += in.leg_torque;

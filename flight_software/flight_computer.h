@@ -52,7 +52,7 @@ public:
 private:
     void calibrateOnPad(const SensorData& data, Commands& cmd);
     void estimate(const SensorData& data, double dt);
-    void steer(const SensorData& data, Vec3 target, Commands& cmd) const;
+    void steer(const SensorData& data, Vec3 target, Commands& cmd);
     Vec3 padDirection(const SensorData& data, double return_gain, double max_lean_deg) const;
     bool timeToLight(const SensorData& data) const;
     double landingThrottle(const SensorData& data) const;
@@ -85,6 +85,9 @@ private:
     double inertia = 0;
     double lever_arm = 0;  // gimbal pivot to CG
     double average_thrust = 0;
+
+    Vec3 rate_filtered;          // gyro rate after the low-pass, for the steering derivative term
+    double rate_filter_time = -1; // when steer() last updated it (it restarts after a gap)
 
     double landing_lit_at = -1;  // when we expect the landing motor to light
     bool legs_released = false;  // we sent the leg release, so the legs are (about to be) out

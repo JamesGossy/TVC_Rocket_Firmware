@@ -49,6 +49,8 @@ Config loadConfig(const std::string& path) {
     READ(dry_cg_legs_out); READ(dry_inertia_pitch_legs_out); READ(dry_inertia_roll_legs_out);
     READ(cd_nose_first); READ(cd_tail_first); READ(cn_alpha); READ(cd_crossflow); READ(cp_nose_first); READ(cp_tail_first);
     READ(cd_leg); READ(cd_foot);
+    READ(aero_model); READ(aero_eta); READ(aero_body_start); READ(aero_low_radius); READ(aero_nose_base); READ(aero_tail_potential); READ(aero_strips);
+    READ(aero_finA_area); READ(aero_finA_x); READ(aero_finA_cross); READ(aero_finB_area); READ(aero_finB_x); READ(aero_finB_cross);
 
     c.motor_file = take("motor_file");
     READ(motor_position); READ(motor_length); READ(motor_gap); READ(eject_speed);
@@ -83,8 +85,8 @@ Config loadConfig(const std::string& path) {
     READ(gps_rate); READ(gps_latency); READ(gps_latency_jitter); READ(gps_velocity_noise);
     READ(gps_dropout); READ(gps_outage_rate); READ(gps_multipath_height); READ(gps_glitch);
 
-    READ(tvc_enabled); READ(control_rate); READ(launch_time); READ(kp); READ(kd); READ(estimator_gain);
-    READ(gps_velocity_gain); READ(landing_brake); READ(touchdown_speed); READ(max_fire_tilt_deg);
+    READ(tvc_enabled); READ(control_rate); READ(launch_time); READ(kp); READ(kd); READ(rate_filter_hz); READ(estimator_gain);
+    READ(gps_velocity_gain); READ(landing_brake); READ(predict_ignition); READ(predict_share); READ(predict_speed); READ(touchdown_speed); READ(max_fire_tilt_deg);
     READ(drift_kill_time); READ(max_lean_deg); READ(pad_return);
     READ(pad_return_height); READ(boost_max_lean_deg); READ(leg_release_speed);
 
@@ -98,7 +100,7 @@ Config loadConfig(const std::string& path) {
 
     READ(mc_dry_mass_percent); READ(mc_dry_cg); READ(mc_thrust_percent); READ(mc_ignition_delay); READ(mc_misalignment_deg);
     READ(mc_launch_tilt_deg); READ(mc_max_wind); READ(mc_blocker_effect); READ(mc_baro_airspeed); READ(mc_max_slope_deg);
-    READ(mc_backlash_spread); READ(mc_servo_offset_deg); READ(mc_leg_spring_percent); READ(mc_foot_crush_percent);
+    READ(mc_backlash_spread); READ(mc_servo_offset_deg); READ(mc_leg_spring_percent); READ(mc_foot_crush_percent); READ(mc_plunger_limit_percent);
     #undef READ
 
     // Anything left over is probably a typo

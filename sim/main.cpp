@@ -134,6 +134,7 @@ static Config randomize(const Config& nominal, std::mt19937& rng) {
     c.leg_spring_k *= spring;
     c.leg_spring_torque_deployed *= spring;
     c.foot_crush_stress *= std::max(0.3, 1 + nominal.mc_foot_crush_percent / 100 * gauss(rng));
+    c.plunger_shear_limit *= std::max(0.3, 1 + nominal.mc_plunger_limit_percent / 100 * gauss(rng));
     return c;
 }
 
@@ -167,7 +168,8 @@ static void runMonteCarlo(const Config& nominal, const VehicleData& vehicle, con
     out << "run,good,dry_mass,wind_speed,landing_ignition_delay,landing_thrust_scale,ascent_thrust_scale,"
            "apogee,fire_altitude,fire_speed,fire_tilt,touchdown_speed,sideways_speed,tilt_deg,burn_left,"
            "hardest_impact,hop_height,tipped_over,landing_x,landing_y,"
-           "legs_latched,plunger_failed,peak_plunger_load,foot_crush_mm,gimbal_stop_s\n";
+           "legs_latched,plunger_failed,peak_plunger_load,foot_crush_mm,gimbal_stop_s,"
+           "burnout_tilt,burnout_rate,boost_peak_tilt,boost_mean_tilt,boost_sat_s,coast_peak_tilt,apogee_tilt\n";
 
     std::mt19937 rng(12345);
     std::vector<double> touchdown_speeds, apogees, drifts;
@@ -199,7 +201,9 @@ static void runMonteCarlo(const Config& nominal, const VehicleData& vehicle, con
             << r.landing_burn_left << "," << r.hardest_impact << "," << r.hop_height << "," << r.tipped_over << ","
             << r.landing_x << "," << r.landing_y << ","
             << r.legs_latched_at_touchdown << "," << r.plunger_failed << "," << r.peak_plunger_load << ","
-            << r.foot_crush_used * 1e3 << "," << r.gimbal_stop_time << "\n";
+            << r.foot_crush_used * 1e3 << "," << r.gimbal_stop_time << ","
+            << r.burnout_tilt_deg << "," << r.burnout_rate_dps << "," << r.boost_peak_tilt_deg << "," << r.boost_mean_tilt_deg << ","
+            << r.boost_sat_time << "," << r.coast_peak_tilt_deg << "," << r.apogee_tilt_deg << "\n";
     }
     double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 

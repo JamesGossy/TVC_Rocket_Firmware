@@ -27,3 +27,17 @@ if fails:
         statistics.mean(f(r, "wind_speed") for r in fails), statistics.mean(f(r, "wind_speed") for r in rows),
         statistics.mean(f(r, "fire_speed") for r in fails), statistics.mean(f(r, "burn_left") for r in fails),
         statistics.mean(f(r, "sideways_speed") for r in fails)))
+
+# Ascent attitude (columns added with the ascent-tumble work; older montecarlo.csv files do not have them)
+if rows and "boost_peak_tilt" in rows[0]:
+    def pct(k, p):
+        v = sorted(f(r, k) for r in rows)
+        return v[int(p / 100 * (len(v) - 1))]
+    print("ascent attitude (tilt = nose from vertical, deg), median / 90th percentile:")
+    for k, label in [("boost_peak_tilt", "worst tilt in boost"), ("boost_mean_tilt", "mean tilt in boost"),
+                     ("burnout_tilt", "tilt at burnout"), ("burnout_rate", "turn rate at burnout (deg/s)"),
+                     ("coast_peak_tilt", "worst tilt in coast, to apogee"), ("apogee_tilt", "tilt at apogee"),
+                     ("fire_tilt", "tilt at landing ignition")]:
+        print(f"  {label:34s} {pct(k, 50):7.1f} / {pct(k, 90):7.1f}")
+    over = sum(1 for r in rows if f(r, "boost_peak_tilt") > 10)
+    print(f"  boost flights that tipped past 10 deg: {over} ({100 * over / n:.0f}%); gimbal asked for 8 deg or more: mean {statistics.mean(f(r, 'boost_sat_s') for r in rows):.2f} s")

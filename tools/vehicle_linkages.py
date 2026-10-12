@@ -146,6 +146,10 @@ def blocker_section(J, links, plume_radius_mm):
 # ---------------------------------------------------------------------------------------------------------------
 # Keeper: horn stud in a radial slot of the ring; the ring's pegs leave the leg tab holes after RELEASE deg
 # ---------------------------------------------------------------------------------------------------------------
+KEEPER_RELEASE_RING_DEG = 8.0     # CAD sweep after the peg shortening (v15): last blocked 7.9 deg, analytic 8.1 deg
+KEEPER_RING_CONTACT_DEG = 11.2    # notch end wall meets a stowed leg's tab (CAD sweep)
+
+
 def keeper_section(J, links):
     S = bv.P(J["Keeper servo shaft"]["origin"])
     aS = bv.V(np.array(J["Keeper servo shaft"]["axis"]))
@@ -155,22 +159,26 @@ def keeper_section(J, links):
     stud_r = 6.0  # horn radius of the M2x8 set screw (BOM: ISO 4026 M2x8 threaded into the horn)
     horn_c = float(np.linalg.norm(S - ring_o))
     return {"servo_shaft": L3(S), "servo_axis": L3(aS), "ring_origin": L3(ring_o), "ring_axis": L3(ring_a),
-            "ring_limits_deg": [math.degrees(lim[0]), math.degrees(lim[1])],
+            "ring_limits_deg": [-KEEPER_RING_CONTACT_DEG, math.degrees(lim[1])],
             "horn_centre_offset_m": horn_c, "stud_radius_m": stud_r / 1000.0,
             "slot_width_m": 0.0023, "slot_radial_range_m": [0.02998, 0.0365],
             "peg_radius_m": 0.036, "peg_diameter_m": 0.0024, "tab_hole_diameter_m": 0.0030,
-            "release_ring_deg": 9.1,
+            "release_ring_deg": KEEPER_RELEASE_RING_DEG,
+            "ring_contact_deg": KEEPER_RING_CONTACT_DEG,
             "servo_deg_for_9deg_ring": 56.0,
             "note": ("Ring angle = atan2(c + r cos a, r sin a) - 90 deg with c the horn-to-ring-axis distance and r the stud radius, "
                      "negative (clockwise) for a positive servo angle. The CAD motion link says 9 deg ring : 56 deg horn. "
-                     "release_ring_deg (peg clear of tab hole) is 9.1, ring hard stop 9.5: VERIFY, margin is only 0.4 deg.")}
+                     "release_ring_deg: peg clear of the tab hole. CAD sweep (TemporaryBRep, tab turned 0.3 deg about its hinge, v15 pegs "
+                     "with tip centre at phi 14.0): last blocked at 7.9 deg, analytic 8.1 -> 8.0 used. There is no physical stop at 9.5 deg "
+                     "(that is only the CAD joint limit); the first contact is the notch end wall on a still-stowed leg's tab at "
+                     "ring_contact_deg (11.2 deg). The ring limit handed to the sim is that contact angle.")}
 
 
 # ---------------------------------------------------------------------------------------------------------------
 # Legs
 # ---------------------------------------------------------------------------------------------------------------
 def legs_section(d, bodies, links, J):
-    out = {"latch_deg": 119.0, "ramp_start_deg": 91.0, "plunger_arm_m": 0.022, "tube_length_m": 0.260,
+    out = {"latch_deg": 119.0, "ramp_start_deg": 91.0, "plunger_arm_m": 0.033, "tube_length_m": 0.260,
            "tube_od_m": 0.014, "tube_id_m": 0.012, "foot_radius_m": 0.0125, "legs": []}
     for i in range(1, 5):
         name = "leg_%d" % i
